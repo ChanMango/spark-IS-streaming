@@ -18,7 +18,6 @@
 package org.apache.spark.mllib.clustering
 
 import scala.reflect.ClassTag
-
 import org.apache.spark.Logging
 import org.apache.spark.annotation.Since
 import org.apache.spark.api.java.JavaSparkContext._
@@ -29,14 +28,13 @@ import org.apache.spark.streaming.dstream.DStream
 import org.apache.spark.util.Utils
 import org.apache.spark.util.random.XORShiftRandom
 import org.apache.spark.mllib.regression.LabeledPoint
-
 import xxl.core.indexStructures.MTree._
 import xxl.core.indexStructures.MTree
 import xxl.core.collections.containers.CounterContainer
 import xxl.core.collections.containers.io._
 import xxl.core.indexStructures.mtrees.MTreeTest
-
 import collection.JavaConversions._
+import org.apache.spark.streaming.Time
 
 /**
  * StreamingKNNModel extends MLlib's KMeansModel for streaming
@@ -72,26 +70,24 @@ import collection.JavaConversions._
  * as batches or points.
  */
 @Since("1.2.0")
-class StreamingKNNModel @Since("1.2.0") (
-    @Since("1.2.0") val casebase: RDD[MTreeTest])
-    extends Logging {
+class StreamingKNNModel (val casebase: RDD[MTreeTest]) extends Serializable with Logging {
 
   /**
    * Perform a k-means update on a batch of data.
-   */
-  /*@Since("1.2.0")
-  def update(data: RDD[MTreeTest]): StreamingKNNModel = {    
-    casebase = data
-    this
-  }*/
-  
-  def predict(data: Vector, k: Int) = {
-    val distLabels = casebase.map(tree => tree.kNNQuery(k, data.toArray.map(_.toFloat)))
-    /* Conversion */
-    val convTuples = distLabels.flatMap(list => asScalaBuffer(list).map(pair => 
-      (pair.getDistance, pair.getLabel)))
-    val result = convTuples.sortBy(_._1, false).take(k).map(_._2).groupBy(identity).maxBy(_._2.size)._1
-    result
+   */  
+  def predict[K: ClassTag](data: RDD[(K, Vector)], k: Int) = {
+    val bdata = data.context.broadcast(data.collect())
+    val preds = bdata.value.map({ case (label, v) =>
+      val distLabels = casebase.map(tree => tree.kNNQuery(k, v.toArray.map(_.toFloat)))
+      /* Conversion */
+      val convTuples = distLabels.flatMap(list => asScalaBuffer(list).map(pair => 
+        (pair.getDistance, pair.getLabel)))
+      println("Size tuples: " + convTuples.count)
+      val pred = convTuples.sortBy(_._1, false).take(k).map(_._2)
+        .groupBy(identity).maxBy(_._2.size)._1
+      (label, pred.toFloat)
+    })
+    data.context.parallelize(preds)
   }
 }
 
@@ -156,28 +152,30 @@ class StreamingKNN @Since("1.2.0") (
    *
    * @param data DStream containing vector data
    */
-  @Since("1.2.0")
-  def trainOn(data: DStream[Vector]) {
-    //assertInitialized()
+  def trainOn(data: DStream[LabeledPoint], dimension: Int) {
     val sc = data.context.sparkContext
-    val trees = (0 until nPartitions).map(i => i -> new MTreeTest(i, 10))
-    val trdd = sc.parallelize(trees, nPartitions)
-    val accum = sc.accumulator(0, "lastTree")
+    val trees = (0 until nPartitions).map(i => i -> new MTreeTest(i, dimension))
+    var updateModel = sc.parallelize(trees, nPartitions)
     data.foreachRDD { (rdd, time) =>
+      //println("First: " + rdd.first().toString())
       val irdd = rdd.map(v => scala.util.Random.nextInt(nPartitions) -> v).groupByKey()
-      val updated = irdd.join(trdd).map({ case (_, (ps, tree)) =>  
-        ps.foreach (p => tree.insert(p.toArray.map(_.toFloat)))
-        tree 
+      println("Indexed elements: " + irdd.count())
+      updateModel = irdd.join(updateModel).map({ case (idx, (ps, tree)) =>  
+        ps.foreach (p => tree.insert(p.features.toArray.map(_.toFloat), p.label.toFloat))
+        idx -> tree 
       })
-      model = new StreamingKNNModel(updated)
+      //println("Number of cases in the new model: " + updated.map(_.getSize).sum)
+      //model = new StreamingKNNModel(updated)
     }
+    println("Number of cases in the new model: " + updateModel.map(_._2.getSize).sum)
+    model = new StreamingKNNModel(updateModel.values)
   }
 
   /**
    * Java-friendly version of `trainOn`.
    */
   @Since("1.4.0")
-  def trainOn(data: JavaDStream[Vector]): Unit = trainOn(data.dstream)
+  def trainOn(data: JavaDStream[LabeledPoint]): Unit = trainOn(data.dstream)
 
   /**
    * Use the clustering model to make predictions on batches of data from a DStream.
@@ -185,17 +183,17 @@ class StreamingKNN @Since("1.2.0") (
    * @param data DStream containing vector data
    * @return DStream containing predictions
    */
-  def predictOn(data: DStream[Vector]): DStream[Float] = {
+  /*def predictOn(data: DStream[Vector]): DStream[Float] = {
     assertInitialized()
     data.map(rdd => model.predict(rdd, k))
-  }
+  }*/
 
   /**
    * Java-friendly version of `predictOn`.
    */
-  def predictOn(data: JavaDStream[Vector]): JavaDStream[java.lang.Integer] = {
+  /*def predictOn(data: JavaDStream[Vector]): JavaDStream[java.lang.Integer] = {
     JavaDStream.fromDStream(predictOn(data.dstream).asInstanceOf[DStream[java.lang.Integer]])
-  }
+  }*/
 
   /**
    * Use the model to make predictions on the values of a DStream and carry over its keys.
@@ -205,19 +203,19 @@ class StreamingKNN @Since("1.2.0") (
    * @return DStream containing the input keys and the predictions as values
    */
   def predictOnValues[K: ClassTag](data: DStream[(K, Vector)]): DStream[(K, Float)] = {
-    assertInitialized()
-    data.mapValues(rdd => model.predict(rdd, k))
+    //assertInitialized()
+    data.transform(rdd => model.predict(rdd, k))
   }
 
   /**
    * Java-friendly version of `predictOnValues`.
    */
-  /*def predictOnValues[K](
+  def predictOnValues[K](
       data: JavaPairDStream[K, Vector]): JavaPairDStream[K, java.lang.Integer] = {
     implicit val tag = fakeClassTag[K]
     JavaPairDStream.fromPairDStream(
       predictOnValues(data.dstream).asInstanceOf[DStream[(K, java.lang.Integer)]])
-  }*/
+  }
   
   /** Check whether cluster centers have been initialized. */
   private[this] def assertInitialized(): Unit = {
