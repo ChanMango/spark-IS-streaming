@@ -28,7 +28,7 @@ object FSMLtest {
       .setNPartitions(2)
 
     model.trainOn(trainingData, dimension = 10)
-    model.predictOnValues(testData.map(lp => (lp.label, lp.features))).print()
+    model.predictOnValues(testData).print()
 
     ssc.start()
     ssc.awaitTermination()

@@ -18,6 +18,9 @@
 package org.apache.spark.mllib.clustering
 
 import scala.reflect.ClassTag
+
+import org.apache.spark.SparkContext._
+
 import org.apache.spark.Logging
 import org.apache.spark.annotation.Since
 import org.apache.spark.api.java.JavaSparkContext._
@@ -29,7 +32,6 @@ import org.apache.spark.util.Utils
 import org.apache.spark.util.random.XORShiftRandom
 import org.apache.spark.mllib.regression.LabeledPoint
 import xxl.core.indexStructures.MTree._
-import xxl.core.indexStructures.MTree
 import xxl.core.collections.containers.CounterContainer
 import xxl.core.collections.containers.io._
 import xxl.core.indexStructures.mtrees.MTreeTest
@@ -70,24 +72,51 @@ import org.apache.spark.streaming.Time
  * as batches or points.
  */
 @Since("1.2.0")
-class StreamingKNNModel (val casebase: RDD[MTreeTest]) extends Serializable with Logging {
+class StreamingKNNModel (val casebase: RDD[(Int, MTreeTest)]) extends Serializable with Logging {
 
   /**
    * Perform a k-means update on a batch of data.
    */  
-  def predict[K: ClassTag](data: RDD[(K, Vector)], k: Int) = {
-    val bdata = data.context.broadcast(data.collect())
-    val preds = bdata.value.map({ case (label, v) =>
-      val distLabels = casebase.map(tree => tree.kNNQuery(k, v.toArray.map(_.toFloat)))
+  def predict[K: ClassTag](data: RDD[LabeledPoint], k: Int) = {
+    
+    val bdata = data.context.broadcast(data.zipWithIndex().map(_.swap).collect())
+    println("casebase size: " + casebase.map{ case (_, t) => t.getSize }.sum)
+    val preds = casebase.flatMap{ case(_, tree) => 
+      val labelsAndPres = bdata.value.map{ case(idx, lp) => 
+        val dls = tree.kNNQuery(k, lp.features.toArray.map(_.toFloat))
+            .map(t => (t.getDistance.toFloat, t.getLabel.toFloat))
+            .sortBy(-_._1)
+            .toArray
+        idx -> (lp.label.toFloat, dls)
+      }
+      labelsAndPres
+    }
+    
+    /* Reduce the neighbors to get the top K from all the trees */
+    preds.reduceByKey{ case ((l1, b1), (_, b2)) => 
+      val res = Array.ofDim[(Float, Float)](k)
+      var i = 0; var j = 0; var c = 0
+      while(c < k) {
+        if(b1(i)._1 > b2(j)._1) {
+          res(c) = b1(i)
+          c += 1; i += 1
+        } else {
+          res(c) = b2(j)
+          c += 1; j += 1
+        }
+      }
+      l1 -> res
+    }.map { case (id, (label, a)) => (label, a.map(_._2).groupBy(identity).maxBy(_._2.size)._1) }
+    
+      /*val distLabels = casebase.map{ case(_, tree) => tree.kNNQuery(k, v.toArray.map(_.toFloat)) }
       /* Conversion */
       val convTuples = distLabels.flatMap(list => asScalaBuffer(list).map(pair => 
         (pair.getDistance, pair.getLabel)))
       println("Size tuples: " + convTuples.count)
       val pred = convTuples.sortBy(_._1, false).take(k).map(_._2)
-        .groupBy(identity).maxBy(_._2.size)._1
-      (label, pred.toFloat)
-    })
-    data.context.parallelize(preds)
+        .groupBy(identity)
+        .maxBy(_._2.size)._1
+      (label, pred.toFloat)*/
   }
 }
 
@@ -155,20 +184,31 @@ class StreamingKNN @Since("1.2.0") (
   def trainOn(data: DStream[LabeledPoint], dimension: Int) {
     val sc = data.context.sparkContext
     val trees = (0 until nPartitions).map(i => i -> new MTreeTest(i, dimension))
-    var updateModel = sc.parallelize(trees, nPartitions)
+    model = new StreamingKNNModel(sc.parallelize(trees, nPartitions))
     data.foreachRDD { (rdd, time) =>
-      //println("First: " + rdd.first().toString())
       val irdd = rdd.map(v => scala.util.Random.nextInt(nPartitions) -> v).groupByKey()
-      println("Indexed elements: " + irdd.count())
-      updateModel = irdd.join(updateModel).map({ case (idx, (ps, tree)) =>  
-        ps.foreach (p => tree.insert(p.features.toArray.map(_.toFloat), p.label.toFloat))
-        idx -> tree 
-      })
+      val count = irdd.map(_._2.size).sum
+      println("Indexed elements: " + count)
+      model = if(count > 0) {
+        val updated = irdd.join(model.casebase).map{ case (idx, (ps, tree)) =>  
+          for(point <- ps) {
+            println("Tree: " + tree == null)
+            println("Features: " + point.features.toArray.map(_.toFloat).mkString(","))
+            println("Label: " + point.label)
+            tree.insert(point.features.toArray.map(_.toFloat), point.label.toFloat)
+          }
+          //ps.foreach (p => tree.insert(p.features.toArray.map(_.toFloat), p.label.toFloat))
+          idx -> tree    
+        }
+        println("Model size: " + updated.map{ case (_, t) => t.getSize }.sum)
+        new StreamingKNNModel(updated)
+      } else {
+        model 
+      }
       //println("Number of cases in the new model: " + updated.map(_.getSize).sum)
       //model = new StreamingKNNModel(updated)
     }
-    println("Number of cases in the new model: " + updateModel.map(_._2.getSize).sum)
-    model = new StreamingKNNModel(updateModel.values)
+    //println("Number of cases in the new model: " + updateModel.map(_._2.getSize).sum)
   }
 
   /**
@@ -200,9 +240,9 @@ class StreamingKNN @Since("1.2.0") (
    *
    * @param data DStream containing (key, feature vector) pairs
    * @tparam K key type
-   * @return DStream containing the input keys and the predictions as values
+   * @return DStream containing the input keys and the predictions as values (label, prediction)
    */
-  def predictOnValues[K: ClassTag](data: DStream[(K, Vector)]): DStream[(K, Float)] = {
+  def predictOnValues(data: DStream[LabeledPoint]): DStream[(Float, Float)] = {
     //assertInitialized()
     data.transform(rdd => model.predict(rdd, k))
   }
@@ -210,12 +250,9 @@ class StreamingKNN @Since("1.2.0") (
   /**
    * Java-friendly version of `predictOnValues`.
    */
-  def predictOnValues[K](
-      data: JavaPairDStream[K, Vector]): JavaPairDStream[K, java.lang.Integer] = {
-    implicit val tag = fakeClassTag[K]
-    JavaPairDStream.fromPairDStream(
+  /*Stream.fromPairDStream(
       predictOnValues(data.dstream).asInstanceOf[DStream[(K, java.lang.Integer)]])
-  }
+  }*/
   
   /** Check whether cluster centers have been initialized. */
   private[this] def assertInitialized(): Unit = {
