@@ -25,20 +25,16 @@ License along with this library;  If not, see <http://www.gnu.org/licenses/>.
 
 package xxl.core.indexStructures.mtrees;
 
+import java.io.IOException;
+import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
 import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.TreeMap;
 
-import xxl.core.collections.containers.Container;
-import xxl.core.collections.containers.CounterContainer;
 import xxl.core.collections.containers.MapContainer;
-import xxl.core.collections.containers.io.BlockFileContainer;
-import xxl.core.collections.containers.io.BufferedContainer;
-import xxl.core.collections.containers.io.ConverterContainer;
 import xxl.core.collections.queues.DynamicHeap;
 import xxl.core.cursors.Cursor;
 import xxl.core.cursors.filters.Taker;
@@ -46,17 +42,12 @@ import xxl.core.functions.AbstractFunction;
 import xxl.core.functions.Constant;
 import xxl.core.functions.Function;
 import xxl.core.indexStructures.MTree;
+import xxl.core.indexStructures.ORTree;
 import xxl.core.indexStructures.Sphere;
 import xxl.core.indexStructures.Tree.Query.Candidate;
-import xxl.core.io.Convertable;
-import xxl.core.io.LRUBuffer;
 import xxl.core.io.converters.ConvertableConverter;
 import xxl.core.io.converters.Converter;
-import xxl.core.spatial.KPE;
-import xxl.core.spatial.points.FloatPoint;
 import xxl.core.spatial.points.LabeledPoint;
-import xxl.core.spatial.points.Point;
-import xxl.core.spatial.rectangles.Rectangle;
 
 
 /**
@@ -166,7 +157,6 @@ public class MTreeTest implements Serializable {
 	private static final long serialVersionUID = -4784817130749649598L;
 	private MTree tree;
 	private int size = 0;
-	private int dimension;
 	//private CounterContainer upperContainer;
 	//private CounterContainer lowerContainer;
 	//private BufferedContainer bufferedContainer;
@@ -239,24 +229,6 @@ public class MTreeTest implements Serializable {
 	}
 
 	/**
-	 * Determining the midpoint of the rectangle belonging to
-	 * the given KPE object.
-	 *
-	 * @param kpe the KPE object delivering the rectangle
-	 * @return the midpoint of the given rectangle
-	 */
-	/*public static FloatPoint getMidPoint (KPE kpe) {
-		Rectangle rect = (FloatPoint)kpe.getData();
-		Point ll = rect.getCorner(false);
-		Point ur = rect.getCorner(true);
-		int dim = ll.dimensions();
-		float[] midValues = new float[dim];
-		for (int i = 0; i < dim; i++)
-			midValues[i] = (float) (ll.getValue(i) + (ur.getValue(i) - ll.getValue(i))/ 2);
-		return new FloatPoint(midValues);
-	}*/
-
-	/**
 	 * Returns a comparator which evaluates the distance of two candidate objects
 	 * to the specified <tt>queryObject</tt>. This comparator
 	 * is used for nearest neighbor queries and defines an order on candidate-
@@ -281,38 +253,15 @@ public class MTreeTest implements Serializable {
 
 		int minCapacity = 10;
 		int maxCapacity = 25;
-		int bufferSize = 100;
+		//int bufferSize = 100;
 		// generating a new instance of the class M-Tree or Slim-Tree
 		final MTree mTree = new MTree(MTree.HYPERPLANE_SPLIT);
-
-		/*BufferedContainer container = 
-				new BufferedContainer(
-					new ConverterContainer(
-						// leaf nodes are 16+8 Bytes of size.
-						// index nodes are (16+8+8)+8 Bytes of size.
-						// ==> so take the maximum for the block size!
-						// additionally each node consumes further 4 bytes for
-						// node number and 2 bytes for level information.
-						new BlockFileContainer("/tmp/MTree_" + id, 2+4+40*maxCapacity),
-		
-						// actually dimension of inserted points is '2'
-						mTree.nodeConverter(mTree.leafEntryConverter(MTreeTest.centerConverter(dimension)), 
-								mTree.indexEntryConverter(MTreeTest.descriptorConverter(dimension))) // define node converter
-					),
-					new LRUBuffer(bufferSize),
-					true
-				);
-				*/
 
 		// initialize the MTree with the descriptor-factory method, a
 		// container for storing the nodes and their minimum and maximum
 		// capacity
 		mTree.initialize(getDescriptor, new MapContainer(new TreeMap()), minCapacity, maxCapacity);
 		tree = mTree;
-		dimension = dim;
-		//upperContainer = upperCounterContainer;
-		//lowerContainer = upperCounterContainer;
-		//this.bufferedContainer = bufferedContainer;
 		
 	}
 	
@@ -320,31 +269,28 @@ public class MTreeTest implements Serializable {
 		//Convertable cpoint = (Convertable) new LabeledPoint(point, label);
 		tree.insert(new LabeledPoint(point, label));
 		size++;
-		//bufferedContainer.flush();
-		//upperContainer.reset();
-		//lowerContainer.reset();
 	}
 	
 	public int getSize() { return size; }
 	
-	public List<Pair<Double, Float>> kNNQuery(int k, float[] point) {
-		int targetLevel = 0;
-		
+	public List<Pair<Double, Float>> kNNQuery(int k, float[] point) {		
 		// consuming one further input element applying the mapping function
 		// (KPE ==> Sphere) to it
 		//Sphere queryObject = (Sphere)SPHERE_COVERING_RECTANGLE_FACTORY.invoke(new FloatPoint(point));
-		FloatPoint fpoint = new FloatPoint(point);
+		LabeledPoint fpoint = new LabeledPoint(point);
 		final Sphere queryObject = new Sphere(fpoint, 0.0, centerConverter(fpoint.dimensions()));
+		
 
 		// consuming the fifty nearest elements concerning the query object at the
 		// the target level;
 		// the order is determined by the comparator given to the dynamic heap
 		// structure realizing a priority queue
 		Cursor cursor = new Taker(
-			tree.query(new DynamicHeap(getDistanceBasedComparator(queryObject)), targetLevel),
+			tree.query(new DynamicHeap(getDistanceBasedComparator(queryObject))),
 			k
 		);
 		
+		//System.out.println("Tree fucking size: " + tree.height());
 		List<Pair<Double, Float>> output = new ArrayList<Pair<Double, Float>>(); 
 		while (cursor.hasNext()) {
 			Sphere next = (Sphere)((Candidate)cursor.next()).descriptor();
@@ -384,4 +330,41 @@ public class MTreeTest implements Serializable {
 		  }
 
 	}
+	
+	
+    private void readObject(ObjectInputStream ois) throws ClassNotFoundException, IOException{
+        ois.defaultReadObject();
+
+        //notice the order of read and write should be same
+        int height = ois.readInt();
+        size = ois.readInt();
+        Sphere rd = (Sphere) ois.readObject();
+        Object rpi = ois.readObject();
+        
+		// generating a new instance of the class M-Tree or Slim-Tree
+		final MTree mTree = new MTree(MTree.HYPERPLANE_SPLIT);
+		if(rpi != null && rd != null) {
+			ORTree.IndexEntry rootEntry = (ORTree.IndexEntry) ((ORTree.IndexEntry)mTree.createIndexEntry(height)).initialize(rd).initialize(rpi);
+			mTree.initialize(rootEntry, MTreeTest.getDescriptor, new MapContainer(new TreeMap()), 10, 25);
+		} else {
+			mTree.initialize(MTreeTest.getDescriptor, new MapContainer(new TreeMap()), 10, 25);
+		}
+		tree = mTree;         
+    }
+     
+    private void writeObject(ObjectOutputStream oos) throws IOException {		
+        oos.defaultWriteObject();
+        
+		Object rootPageId = null;
+		Sphere rootDescriptor = null;
+        if(size > 0) {
+        	rootPageId = tree.rootEntry().id();   
+        	rootDescriptor = (Sphere) tree.rootDescriptor();
+        }
+        
+        oos.writeInt(tree.height());
+        oos.writeInt(size);
+        oos.writeObject(rootDescriptor);
+        oos.writeObject(rootPageId);
+    }
 }

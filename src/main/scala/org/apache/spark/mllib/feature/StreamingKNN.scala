@@ -72,7 +72,7 @@ import org.apache.spark.streaming.Time
  * as batches or points.
  */
 @Since("1.2.0")
-class StreamingKNNModel (val casebase: RDD[(Int, MTreeTest)]) extends Serializable with Logging {
+class StreamingKNNModel (val casebase: RDD[(Int, MTreeTest)], val size: Double) extends Serializable with Logging {
 
   /**
    * Perform a k-means update on a batch of data.
@@ -92,11 +92,15 @@ class StreamingKNNModel (val casebase: RDD[(Int, MTreeTest)]) extends Serializab
       labelsAndPres
     }
     
-    /* Reduce the neighbors to get the top K from all the trees */
+    val count = preds.count()
+    if(count > 0) { println("preds: " + preds.first()._2._2.mkString(",")); println("preds count: " + count) }
+    
+    /* Reduce the neighbors to get the top K from all the trees (buffers must be sorted!!) */
     preds.reduceByKey{ case ((l1, b1), (_, b2)) => 
       val res = Array.ofDim[(Float, Float)](k)
       var i = 0; var j = 0; var c = 0
-      while(c < k) {
+      // Get the biggest elements from both buffers
+      while(c < k && i < b1.size && j < b2.size) {
         if(b1(i)._1 > b2(j)._1) {
           res(c) = b1(i)
           c += 1; i += 1
@@ -105,18 +109,15 @@ class StreamingKNNModel (val casebase: RDD[(Int, MTreeTest)]) extends Serializab
           c += 1; j += 1
         }
       }
-      l1 -> res
-    }.map { case (id, (label, a)) => (label, a.map(_._2).groupBy(identity).maxBy(_._2.size)._1) }
-    
-      /*val distLabels = casebase.map{ case(_, tree) => tree.kNNQuery(k, v.toArray.map(_.toFloat)) }
-      /* Conversion */
-      val convTuples = distLabels.flatMap(list => asScalaBuffer(list).map(pair => 
-        (pair.getDistance, pair.getLabel)))
-      println("Size tuples: " + convTuples.count)
-      val pred = convTuples.sortBy(_._1, false).take(k).map(_._2)
-        .groupBy(identity)
-        .maxBy(_._2.size)._1
-      (label, pred.toFloat)*/
+      // Add the remaining elements from a single buffer
+      while(i < b1.size && c < k) { res(c) = b1(i); c += 1; i += 1  }
+      while(j < b2.size && c < k) { res(c) = b2(j); c += 1; j += 1  }
+      l1 -> res.filter(_ != null)
+    }.map { case (_, (label, a)) =>
+      println("a printed: " + a.mkString(","))
+      val pred = a.map(_._2).groupBy(identity).maxBy(_._2.size)._1
+      (label, pred) 
+    }
   }
 }
 
@@ -145,7 +146,7 @@ class StreamingKNN @Since("1.2.0") (
   @Since("1.2.0")
   def this() = this(2, 5)
 
-  protected var model: StreamingKNNModel = new StreamingKNNModel(null)
+  protected var model: StreamingKNNModel = new StreamingKNNModel(null, 0.0)
 
   /**
    * Set the number of clusters.
@@ -184,7 +185,7 @@ class StreamingKNN @Since("1.2.0") (
   def trainOn(data: DStream[LabeledPoint], dimension: Int) {
     val sc = data.context.sparkContext
     val trees = (0 until nPartitions).map(i => i -> new MTreeTest(i, dimension))
-    model = new StreamingKNNModel(sc.parallelize(trees, nPartitions))
+    model = new StreamingKNNModel(sc.parallelize(trees, nPartitions), 0)
     data.foreachRDD { (rdd, time) =>
       val irdd = rdd.map(v => scala.util.Random.nextInt(nPartitions) -> v).groupByKey()
       val count = irdd.map(_._2.size).sum
@@ -192,22 +193,21 @@ class StreamingKNN @Since("1.2.0") (
       model = if(count > 0) {
         val updated = irdd.join(model.casebase).map{ case (idx, (ps, tree)) =>  
           for(point <- ps) {
-            println("Tree: " + tree == null)
-            println("Features: " + point.features.toArray.map(_.toFloat).mkString(","))
-            println("Label: " + point.label)
             tree.insert(point.features.toArray.map(_.toFloat), point.label.toFloat)
           }
           //ps.foreach (p => tree.insert(p.features.toArray.map(_.toFloat), p.label.toFloat))
           idx -> tree    
         }
-        println("Model size: " + updated.map{ case (_, t) => t.getSize }.sum)
-        new StreamingKNNModel(updated)
+        val size = updated.map{ case (_, t) => t.getSize }.sum
+        println("Model size: " + size)
+        new StreamingKNNModel(updated, size)
       } else {
         model 
       }
       //println("Number of cases in the new model: " + updated.map(_.getSize).sum)
       //model = new StreamingKNNModel(updated)
     }
+    //model.casebase.cache()
     //println("Number of cases in the new model: " + updateModel.map(_._2.getSize).sum)
   }
 
@@ -256,7 +256,7 @@ class StreamingKNN @Since("1.2.0") (
   
   /** Check whether cluster centers have been initialized. */
   private[this] def assertInitialized(): Unit = {
-    if (model.casebase == null) {
+    if (model.size == 0) {
       throw new IllegalStateException(
         "Initial case-base must be set before starting predictions")
     }

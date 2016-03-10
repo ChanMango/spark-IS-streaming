@@ -25,6 +25,9 @@ License along with this library;  If not, see <http://www.gnu.org/licenses/>.
 
 package xxl.core.indexStructures;
 
+import java.io.IOException;
+import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
 import java.io.Serializable;
 import java.util.Arrays;
 import java.util.Collection;
@@ -595,10 +598,7 @@ public abstract class Tree implements Serializable {
 	 * @see Tree#insert(Object,Descriptor,int)
 	 */
 	public void insert (Object data) {
-		System.out.println("Data: " + data == null);
-		System.out.println("Descriptor: " + getDescriptor == null);
-		Descriptor d = (Descriptor)getDescriptor.invoke(data);
-		insert(data, d, 0);
+		insert(data, (Descriptor)getDescriptor.invoke(data), 0);
 	}
 	
 	/** Overwrites the <tt>oldData</tt> in the tree by the Object <tt>newData</tt>.
@@ -1841,4 +1841,5 @@ public abstract class Tree implements Serializable {
 		}
 
 	}// class Query
+ 
 }

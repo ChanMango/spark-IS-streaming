@@ -18,11 +18,8 @@ object FSMLtest {
     val ssc = new StreamingContext(conf, Seconds(1))
 
     val trainingData = ssc.textFileStream("/home/sramirez/datasets/poker-5-fold/streaming/poker-small.tra/").map(LabeledPoint.parse)
-    val testData = ssc.textFileStream("/home/sramirez/datasets/poker-5-fold/streaming/poker-small.tra/").map(LabeledPoint.parse)
+    val testData = ssc.textFileStream("/home/sramirez/datasets/poker-5-fold/streaming/poker-small.tst/").map(LabeledPoint.parse)
     
-    /*val words = trainingData.flatMap(_.split(" "))
-    val wordCounts = words.map(x => (x, 1)).reduceByKey(_ + _)
-    wordCounts.print()*/
     val model = new StreamingKNN()
       .setK(5)
       .setNPartitions(2)
