@@ -333,7 +333,7 @@ public class MTreeTest implements Serializable {
 	
 	
     private void readObject(ObjectInputStream ois) throws ClassNotFoundException, IOException{
-        ois.defaultReadObject();
+        //ois.defaultReadObject();
 
         //notice the order of read and write should be same
         int height = ois.readInt();
@@ -353,7 +353,7 @@ public class MTreeTest implements Serializable {
     }
      
     private void writeObject(ObjectOutputStream oos) throws IOException {		
-        oos.defaultWriteObject();
+        //oos.defaultWriteObject();
         
 		Object rootPageId = null;
 		Sphere rootDescriptor = null;

@@ -232,8 +232,12 @@ public abstract class ORTree extends Tree implements Serializable {
 	 * of the subtree. We call this node the subnode of the index entry.
 	 * @see Tree.IndexEntry
 	 */ 
-	public class IndexEntry extends Tree.IndexEntry {
+	public class IndexEntry extends Tree.IndexEntry implements Serializable {
 		
+		/**
+		 * 
+		 */
+		private static final long serialVersionUID = 2834622139620876716L;
 		/** The descriptor of the subtree of this index entry.
 		 */
 		protected Descriptor descriptor;

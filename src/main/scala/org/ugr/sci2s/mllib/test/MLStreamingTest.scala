@@ -25,7 +25,8 @@ object FSMLtest {
       .setNPartitions(2)
 
     model.trainOn(trainingData, dimension = 10)
-    model.predictOnValues(testData).print()
+    model.predictOnValues(testData).filter(t => t._1 == t._2).count().saveAsTextFiles("/home/sramirez/output", "txt")
+    
 
     ssc.start()
     ssc.awaitTermination()

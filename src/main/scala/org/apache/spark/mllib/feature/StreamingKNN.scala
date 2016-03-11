@@ -82,26 +82,26 @@ class StreamingKNNModel (val casebase: RDD[(Int, MTreeTest)], val size: Double) 
     val bdata = data.context.broadcast(data.zipWithIndex().map(_.swap).collect())
     println("casebase size: " + casebase.map{ case (_, t) => t.getSize }.sum)
     val preds = casebase.flatMap{ case(_, tree) => 
-      val labelsAndPres = bdata.value.map{ case(idx, lp) => 
+      val labelsAndPreds = bdata.value.map{ case(idx, lp) => 
         val dls = tree.kNNQuery(k, lp.features.toArray.map(_.toFloat))
             .map(t => (t.getDistance.toFloat, t.getLabel.toFloat))
-            .sortBy(-_._1)
+            .sortBy(_._1)
             .toArray
         idx -> (lp.label.toFloat, dls)
       }
-      labelsAndPres
+      labelsAndPreds
     }
     
-    val count = preds.count()
-    if(count > 0) { println("preds: " + preds.first()._2._2.mkString(",")); println("preds count: " + count) }
+    //val count = preds.count()
+    //if(count > 0) { println("preds: " + preds.first()._2._2.mkString(",")); println("preds count: " + count) }
     
-    /* Reduce the neighbors to get the top K from all the trees (buffers must be sorted!!) */
+    /* Reduce the neighbors to get the nearest ones from all the trees (arrays must be sorted) */
     preds.reduceByKey{ case ((l1, b1), (_, b2)) => 
       val res = Array.ofDim[(Float, Float)](k)
       var i = 0; var j = 0; var c = 0
-      // Get the biggest elements from both buffers
+      // Get the nearest neighbors from both arrays
       while(c < k && i < b1.size && j < b2.size) {
-        if(b1(i)._1 > b2(j)._1) {
+        if(b1(i)._1 < b2(j)._1) {
           res(c) = b1(i)
           c += 1; i += 1
         } else {
@@ -109,12 +109,11 @@ class StreamingKNNModel (val casebase: RDD[(Int, MTreeTest)], val size: Double) 
           c += 1; j += 1
         }
       }
-      // Add the remaining elements from a single buffer
+      // Add the remaining elements from a single array
       while(i < b1.size && c < k) { res(c) = b1(i); c += 1; i += 1  }
       while(j < b2.size && c < k) { res(c) = b2(j); c += 1; j += 1  }
       l1 -> res.filter(_ != null)
     }.map { case (_, (label, a)) =>
-      println("a printed: " + a.mkString(","))
       val pred = a.map(_._2).groupBy(identity).maxBy(_._2.size)._1
       (label, pred) 
     }
@@ -144,7 +143,7 @@ class StreamingKNN @Since("1.2.0") (
     @Since("1.2.0") var nPartitions: Int) extends Logging with Serializable {
 
   @Since("1.2.0")
-  def this() = this(2, 5)
+  def this() = this(5, 2)
 
   protected var model: StreamingKNNModel = new StreamingKNNModel(null, 0.0)
 
@@ -170,7 +169,7 @@ class StreamingKNN @Since("1.2.0") (
    * Return the latest model.
    */
   @Since("1.2.0")
-  def latestModel(): StreamingKNNModel = {
+  def updatedModel(): StreamingKNNModel = {
     model
   }
 
@@ -188,27 +187,21 @@ class StreamingKNN @Since("1.2.0") (
     model = new StreamingKNNModel(sc.parallelize(trees, nPartitions), 0)
     data.foreachRDD { (rdd, time) =>
       val irdd = rdd.map(v => scala.util.Random.nextInt(nPartitions) -> v).groupByKey()
-      val count = irdd.map(_._2.size).sum
-      println("Indexed elements: " + count)
-      model = if(count > 0) {
-        val updated = irdd.join(model.casebase).map{ case (idx, (ps, tree)) =>  
-          for(point <- ps) {
-            tree.insert(point.features.toArray.map(_.toFloat), point.label.toFloat)
-          }
-          //ps.foreach (p => tree.insert(p.features.toArray.map(_.toFloat), p.label.toFloat))
-          idx -> tree    
+      val updated = irdd.join(model.casebase).map{ case (idx, (ps, tree)) =>  
+        for(point <- ps) {
+          tree.insert(point.features.toArray.map(_.toFloat), point.label.toFloat)
         }
-        val size = updated.map{ case (_, t) => t.getSize }.sum
-        println("Model size: " + size)
-        new StreamingKNNModel(updated, size)
-      } else {
-        model 
+        //ps.foreach (p => tree.insert(p.features.toArray.map(_.toFloat), p.label.toFloat))
+        idx -> tree    
       }
-      //println("Number of cases in the new model: " + updated.map(_.getSize).sum)
-      //model = new StreamingKNNModel(updated)
+      updated.cache()
+      val s = updated.count()
+      if(s > 0) model = new StreamingKNNModel(updated, s)
+      
+      //val size = updated.map{ case (_, t) => t.getSize }.sum
+      //println("Model size: " + size)
+      
     }
-    //model.casebase.cache()
-    //println("Number of cases in the new model: " + updateModel.map(_._2.getSize).sum)
   }
 
   /**
@@ -250,9 +243,12 @@ class StreamingKNN @Since("1.2.0") (
   /**
    * Java-friendly version of `predictOnValues`.
    */
-  /*Stream.fromPairDStream(
-      predictOnValues(data.dstream).asInstanceOf[DStream[(K, java.lang.Integer)]])
-  }*/
+  @Since("1.4.0")
+  def predictOnValues(
+      data: JavaDStream[LabeledPoint]): JavaPairDStream[Float, Float] = {
+    JavaPairDStream.fromPairDStream(
+      predictOnValues(data.dstream).asInstanceOf[DStream[(Float, Float)]])
+  }
   
   /** Check whether cluster centers have been initialized. */
   private[this] def assertInitialized(): Unit = {

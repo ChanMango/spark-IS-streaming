@@ -918,7 +918,7 @@ public abstract class Tree implements Serializable {
 	 * of a tree. Each index entry refers to a {@link Tree.Node node} which is the root
 	 * of the subtree. We call this <tt>Node</tt> the subnode of the <tt>IndexEntry</tt>.
 	 */ 
-	public class IndexEntry {
+	public class IndexEntry implements Serializable {
 
 		/** Handle used to lookup the node, which the index entry refers to, in its container.
 		*/
@@ -929,6 +929,7 @@ public abstract class Tree implements Serializable {
 		 */
 		protected int parentLevel;
 
+		public IndexEntry() {}
 		/** Creates a new <tt>IndexEntry</tt> with a given {@link Tree.IndexEntry#parentLevel parent level}.
 		 * 
 		 * @param parentLevel the parent level of the new <tt>IndexEntry</tt>.

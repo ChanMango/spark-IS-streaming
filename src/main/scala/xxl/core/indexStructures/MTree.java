@@ -103,8 +103,14 @@ public class MTree extends ORTree implements Serializable {
 	 *	@see Tree.Node
 	 *  @see ORTree.Node
 	 */
-	public class Node extends ORTree.Node {
+	public class Node extends ORTree.Node implements Serializable {
 
+		/**
+		 * 
+		 */
+		private static final long serialVersionUID = -7028701997962595983L;
+
+		public Node() { super(); }
 		/* (non-Javadoc)
 		 * @see xxl.core.indexStructures.ORTree.Node#chooseSubtree(xxl.core.indexStructures.Descriptor, java.util.Iterator)
 		 */
