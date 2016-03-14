@@ -24,7 +24,7 @@ object FSMLtest {
       .setK(1)
       .setNPartitions(2)
 
-    model.trainOn(trainingData, dimension = 10)
+    model.trainOn(trainingData)
     model.predictOnValues(testData).filter(t => t._1 == t._2).count().print()
         //.transform(_.repartition(1)).saveAsTextFiles("/home/sramirez/output", "txt")
     

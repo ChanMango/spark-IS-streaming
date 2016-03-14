@@ -21,7 +21,7 @@ object KNNSeqTest {
     val tree = new MTreeTest()
     points.foreach (p => tree.insert(p.features.toArray.map(_.toFloat), p.label.toFloat))    
     val predict = (p: LabeledPoint) => {
-      val neigh = tree.kNNQuery(1, p.features.toArray.map(_.toFloat)).map(t => (t.getDistance.toFloat, t.getLabel.toFloat))
+      val neigh = tree.kNNQuery(1, p.features.toArray.map(_.toFloat)).map(t => (t.getDistance.toFloat, t.getPoint.getLabel))
       val pred = neigh.map(_._2).groupBy(identity).maxBy(_._2.size)._1
       (p.label, pred)
     }    

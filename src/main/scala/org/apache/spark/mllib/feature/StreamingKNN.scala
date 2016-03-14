@@ -18,9 +18,7 @@
 package org.apache.spark.mllib.clustering
 
 import scala.reflect.ClassTag
-
 import org.apache.spark.SparkContext._
-
 import org.apache.spark.Logging
 import org.apache.spark.annotation.Since
 import org.apache.spark.api.java.JavaSparkContext._
@@ -37,6 +35,7 @@ import xxl.core.collections.containers.io._
 import xxl.core.indexStructures.mtrees.MTreeTest
 import collection.JavaConversions._
 import org.apache.spark.streaming.Time
+import org.apache.spark.mllib.linalg.DenseVector
 
 /**
  * StreamingKNNModel extends MLlib's KMeansModel for streaming
@@ -72,28 +71,29 @@ import org.apache.spark.streaming.Time
  * as batches or points.
  */
 @Since("1.2.0")
-class StreamingKNNModel (val casebase: RDD[(Int, MTreeTest)], val size: Double) extends Serializable with Logging {
+class StreamingKNNModel (
+    val casebase: RDD[(Int, MTreeTest)], 
+    val size: Double
+    ) extends Serializable with Logging {
 
   /**
-   * Perform a k-means update on a batch of data.
+   * Predict the labels for a RDD using k-NN and the updated case-base model.
    */  
-  def predict[K: ClassTag](data: RDD[LabeledPoint], k: Int) = {
+  def predict(data: RDD[LabeledPoint], k: Int) = {
     
+    /* Broadcast each RDD in the stream and get the k-nn from each tree for each example */
     val bdata = data.context.broadcast(data.zipWithIndex().map(_.swap).collect())
-    println("casebase size: " + casebase.map{ case (_, t) => t.getSize }.sum)
+    //println("casebase size: " + casebase.map{ case (_, t) => t.getSize }.sum)
     val preds = casebase.flatMap{ case(_, tree) => 
       val labelsAndPreds = bdata.value.map{ case(idx, lp) => 
         val dls = tree.kNNQuery(k, lp.features.toArray.map(_.toFloat))
-            .map(t => (t.getDistance.toFloat, t.getLabel.toFloat))
+            .map(t => (t.getDistance.toFloat, t.getPoint().getLabel))
             .sortBy(_._1)
             .toArray
         idx -> (lp.label.toFloat, dls)
       }
       labelsAndPreds
     }
-    
-    //val count = preds.count()
-    //if(count > 0) { println("preds: " + preds.first()._2._2.mkString(",")); println("preds count: " + count) }
     
     /* Reduce the neighbors to get the nearest ones from all the trees (arrays must be sorted) */
     preds.reduceByKey{ case ((l1, b1), (_, b2)) => 
@@ -114,10 +114,40 @@ class StreamingKNNModel (val casebase: RDD[(Int, MTreeTest)], val size: Double) 
       while(j < b2.size && c < k) { res(c) = b2(j); c += 1; j += 1  }
       l1 -> res.filter(_ != null)
     }.map { case (_, (label, a)) =>
+      /* Use the majority voting criterion to get the predicted label */
       val pred = a.map(_._2).groupBy(identity).maxBy(_._2.size)._1
       (label, pred) 
     }
   }
+  
+  /**
+   * Predict the labels for a single example using k-NN and the updated case-base.
+   */  
+  def predict(data: Vector, k: Int) = {    
+    val preds = casebase.flatMap{ case(_, tree) =>
+      tree.kNNQuery(k, data.toArray.map(_.toFloat))
+        .map(t => (t.getDistance.toFloat, t.getPoint.getLabel))
+    }.takeOrdered(k)(Ordering.by(_._1))    
+    
+    /* Use the majority voting criterion to get the predicted label */
+    preds.map(_._2).groupBy(identity).maxBy(_._2.size)._1
+    
+  }
+  
+  /**
+   * Get the k-NN of a given example. 
+   * 
+   * @return An array of neighbors (Distance, Neighbor point)
+   */  
+  def kNNQuery(data: Vector, k: Int): Array[(Float, LabeledPoint)] = {    
+    casebase.flatMap{ case(_, tree) =>
+      tree.kNNQuery(k, data.toArray.map(_.toFloat))
+        .map(t => (t.getDistance.toFloat, t.getPoint))
+    }.takeOrdered(k)(Ordering.by(_._1)).map{ case(dist, jlp) => 
+      dist -> new LabeledPoint(jlp.getLabel, Vectors.dense(jlp.getFeatures().map(_.toDouble))) 
+    }    
+  }
+  
 }
 
 /**
@@ -143,7 +173,7 @@ class StreamingKNN @Since("1.2.0") (
     @Since("1.2.0") var nPartitions: Int) extends Logging with Serializable {
 
   @Since("1.2.0")
-  def this() = this(5, 2)
+  def this() = this(1, 2)
 
   protected var model: StreamingKNNModel = new StreamingKNNModel(null, 0.0)
 
@@ -181,7 +211,7 @@ class StreamingKNN @Since("1.2.0") (
    *
    * @param data DStream containing vector data
    */
-  def trainOn(data: DStream[LabeledPoint], dimension: Int) {
+  def trainOn(data: DStream[LabeledPoint]) {
     val sc = data.context.sparkContext
     val trees = (0 until nPartitions).map(i => i -> new MTreeTest())
     model = new StreamingKNNModel(sc.parallelize(trees, nPartitions), 0)
@@ -191,7 +221,6 @@ class StreamingKNN @Since("1.2.0") (
         for(point <- ps) {
           tree.insert(point.features.toArray.map(_.toFloat), point.label.toFloat)
         }
-        //ps.foreach (p => tree.insert(p.features.toArray.map(_.toFloat), p.label.toFloat))
         idx -> tree    
       }
       updated.cache()
@@ -209,24 +238,6 @@ class StreamingKNN @Since("1.2.0") (
    */
   @Since("1.4.0")
   def trainOn(data: JavaDStream[LabeledPoint]): Unit = trainOn(data.dstream)
-
-  /**
-   * Use the clustering model to make predictions on batches of data from a DStream.
-   *
-   * @param data DStream containing vector data
-   * @return DStream containing predictions
-   */
-  /*def predictOn(data: DStream[Vector]): DStream[Float] = {
-    assertInitialized()
-    data.map(rdd => model.predict(rdd, k))
-  }*/
-
-  /**
-   * Java-friendly version of `predictOn`.
-   */
-  /*def predictOn(data: JavaDStream[Vector]): JavaDStream[java.lang.Integer] = {
-    JavaDStream.fromDStream(predictOn(data.dstream).asInstanceOf[DStream[java.lang.Integer]])
-  }*/
 
   /**
    * Use the model to make predictions on the values of a DStream and carry over its keys.

@@ -249,11 +249,10 @@ public class MTreeTest implements Serializable {
 	}
 
 	
-	public MTreeTest (int id, int dim) {
+	public MTreeTest () {
 
 		int minCapacity = 10;
 		int maxCapacity = 25;
-		//int bufferSize = 100;
 		// generating a new instance of the class M-Tree or Slim-Tree
 		final MTree mTree = new MTree(MTree.HYPERPLANE_SPLIT);
 
@@ -273,7 +272,7 @@ public class MTreeTest implements Serializable {
 	
 	public int getSize() { return size; }
 	
-	public List<Pair<Double, Float>> kNNQuery(int k, float[] point) {		
+	public List<Pair<Double, LabeledPoint>> kNNQuery(int k, float[] point) {		
 		// consuming one further input element applying the mapping function
 		// (KPE ==> Sphere) to it
 		//Sphere queryObject = (Sphere)SPHERE_COVERING_RECTANGLE_FACTORY.invoke(new FloatPoint(point));
@@ -281,52 +280,51 @@ public class MTreeTest implements Serializable {
 		final Sphere queryObject = new Sphere(fpoint, 0.0, centerConverter(fpoint.dimensions()));
 		
 
-		// consuming the fifty nearest elements concerning the query object at the
+		// consuming the k-nearest elements concerning the query object at the
 		// the target level;
 		// the order is determined by the comparator given to the dynamic heap
 		// structure realizing a priority queue
+		
 		Cursor cursor = new Taker(
 			tree.query(new DynamicHeap(getDistanceBasedComparator(queryObject))),
 			k
 		);
 		
 		//System.out.println("Tree fucking size: " + tree.height());
-		List<Pair<Double, Float>> output = new ArrayList<Pair<Double, Float>>(); 
+		List<Pair<Double, LabeledPoint>> output = new ArrayList<Pair<Double, LabeledPoint>>(); 
 		while (cursor.hasNext()) {
 			Sphere next = (Sphere)((Candidate)cursor.next()).descriptor();
 			double distance = queryObject.centerDistance(next);
 			LabeledPoint center = (LabeledPoint) next.center();
-			output.add(new Pair<Double, Float>(distance, center.getLabel()));
+			output.add(new Pair<Double, LabeledPoint>(distance, center));
 		}
 		
-		cursor.close();		
-		//upperContainer.reset();
-		//lowerContainer.reset();
+		cursor.close();
 		return output;
 	}
 	
-	public class Pair<Double, Float> {
+	public class Pair<Double, LabeledPoint> {
 
 		  private final Double distance;
-		  private final Float label;
+		  private final LabeledPoint point;
 
-		  public Pair(Double distance, Float label) {
+		  public Pair(Double distance, LabeledPoint point) {
 		    this.distance = distance;
-		    this.label = label;
+		    this.point = point;
 		  }
 
 		  public Double getDistance() { return distance; }
-		  public Float getLabel() { return label; }
+		  public LabeledPoint getPoint() { return point; }
 
 		  @Override
-		  public int hashCode() { return distance.hashCode() ^ label.hashCode(); }
+		  public int hashCode() { return distance.hashCode() ^ point.hashCode(); }
 
 		  @Override
 		  public boolean equals(Object o) {
 		    if (!(o instanceof Pair)) return false;
 		    Pair pairo = (Pair) o;
 		    return this.distance.equals(pairo.getDistance()) &&
-		           this.label.equals(pairo.getLabel());
+		           this.point.equals(pairo.getPoint());
 		  }
 
 	}

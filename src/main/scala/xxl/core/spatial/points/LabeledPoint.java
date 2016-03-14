@@ -132,6 +132,8 @@ public class LabeledPoint extends AbstractPoint implements Convertable, Cloneabl
 	public Object getPoint(){
 		return point;
 	}
+	
+	public float[] getFeatures() { return point; }
 
 	public float getLabel(){return label;}
 
