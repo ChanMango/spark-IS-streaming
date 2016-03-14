@@ -183,7 +183,7 @@ class StreamingKNN @Since("1.2.0") (
    */
   def trainOn(data: DStream[LabeledPoint], dimension: Int) {
     val sc = data.context.sparkContext
-    val trees = (0 until nPartitions).map(i => i -> new MTreeTest(i, dimension))
+    val trees = (0 until nPartitions).map(i => i -> new MTreeTest())
     model = new StreamingKNNModel(sc.parallelize(trees, nPartitions), 0)
     data.foreachRDD { (rdd, time) =>
       val irdd = rdd.map(v => scala.util.Random.nextInt(nPartitions) -> v).groupByKey()

@@ -21,11 +21,12 @@ object FSMLtest {
     val testData = ssc.textFileStream("/home/sramirez/datasets/poker-5-fold/streaming/poker-small.tst/").map(LabeledPoint.parse)
     
     val model = new StreamingKNN()
-      .setK(5)
+      .setK(1)
       .setNPartitions(2)
 
     model.trainOn(trainingData, dimension = 10)
-    model.predictOnValues(testData).filter(t => t._1 == t._2).count().saveAsTextFiles("/home/sramirez/output", "txt")
+    model.predictOnValues(testData).filter(t => t._1 == t._2).count().print()
+        //.transform(_.repartition(1)).saveAsTextFiles("/home/sramirez/output", "txt")
     
 
     ssc.start()
