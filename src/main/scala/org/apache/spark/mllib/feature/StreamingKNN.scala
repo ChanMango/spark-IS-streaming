@@ -121,17 +121,42 @@ class StreamingKNNModel (
   }
   
   /**
-   * Predict the labels for a single example using k-NN and the updated case-base.
+   * Predict the labels for a RDD using k-NN and the updated case-base model.
    */  
-  def predict(data: Vector, k: Int) = {    
-    val preds = casebase.flatMap{ case(_, tree) =>
-      tree.kNNQuery(k, data.toArray.map(_.toFloat))
-        .map(t => (t.getDistance.toFloat, t.getPoint.getLabel))
-    }.takeOrdered(k)(Ordering.by(_._1))    
-    
-    /* Use the majority voting criterion to get the predicted label */
-    preds.map(_._2).groupBy(identity).maxBy(_._2.size)._1
-    
+  def kNNQuery(data: RDD[LabeledPoint], k: Int) = {    
+    /* Broadcast each RDD in the stream and get the k-nn from each tree for each example */
+    val idata = data.zipWithIndex().map(_.swap).cache()
+    val bdata = data.context.broadcast(idata.collect())
+    val neighbors = casebase.flatMap{ case(_, tree) => 
+      bdata.value.map{ case(idx, lp) => 
+        val dls = tree.kNNQuery(k, lp.features.toArray.map(_.toFloat))
+            .map(t => (t.getDistance.toFloat, 
+                new LabeledPoint(t.getPoint.getLabel, Vectors.dense(t.getPoint.getFeatures.map(_.toDouble)))))
+            .sortBy(_._1)
+            .toArray
+        idx -> dls
+      }
+    }.reduceByKey{ case (b1, b2) => 
+      /* Reduce the neighbors to get the nearest ones from all the trees (arrays must be sorted) */
+      val res = Array.ofDim[(Float, LabeledPoint)](k)
+      var i = 0; var j = 0; var c = 0
+      // Get the nearest neighbors from both arrays
+      while(c < k && i < b1.size && j < b2.size) {
+        if(b1(i)._1 < b2(j)._1) {
+          res(c) = b1(i)
+          c += 1; i += 1
+        } else {
+          res(c) = b2(j)
+          c += 1; j += 1
+        }
+      }
+      // Add the remaining elements from a single array
+      while(i < b1.size && c < k) { res(c) = b1(i); c += 1; i += 1  }
+      while(j < b2.size && c < k) { res(c) = b2(j); c += 1; j += 1  }
+      res.filter(_ != null)
+    }    
+   
+    idata.join(neighbors).values
   }
   
   /**
@@ -139,13 +164,14 @@ class StreamingKNNModel (
    * 
    * @return An array of neighbors (Distance, Neighbor point)
    */  
-  def kNNQuery(data: Vector, k: Int): Array[(Float, LabeledPoint)] = {    
-    casebase.flatMap{ case(_, tree) =>
-      tree.kNNQuery(k, data.toArray.map(_.toFloat))
+  def kNNQuery(data: LabeledPoint, k: Int) = {    
+    val neigh = casebase.flatMap{ case(_, tree) =>
+      tree.kNNQuery(k, data.features.toArray.map(_.toFloat))
         .map(t => (t.getDistance.toFloat, t.getPoint))
     }.takeOrdered(k)(Ordering.by(_._1)).map{ case(dist, jlp) => 
-      dist -> new LabeledPoint(jlp.getLabel, Vectors.dense(jlp.getFeatures().map(_.toDouble))) 
-    }    
+      dist -> new LabeledPoint(jlp.getLabel, Vectors.dense(jlp.getFeatures.map(_.toDouble))) 
+    }
+    data -> neigh
   }
   
 }
