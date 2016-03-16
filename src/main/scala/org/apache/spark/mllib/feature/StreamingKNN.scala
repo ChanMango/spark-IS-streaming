@@ -32,7 +32,7 @@ import org.apache.spark.mllib.regression.LabeledPoint
 import xxl.core.indexStructures.MTree._
 import xxl.core.collections.containers.CounterContainer
 import xxl.core.collections.containers.io._
-import xxl.core.indexStructures.mtrees.MTreeTest
+import xxl.core.indexStructures.mtrees.MTreeLP
 import collection.JavaConversions._
 import org.apache.spark.streaming.Time
 import org.apache.spark.mllib.linalg.DenseVector
@@ -72,7 +72,7 @@ import org.apache.spark.mllib.linalg.DenseVector
  */
 @Since("1.2.0")
 class StreamingKNNModel (
-    val casebase: RDD[(Int, MTreeTest)], 
+    val casebase: RDD[(Int, MTreeLP)], 
     val size: Double
     ) extends Serializable with Logging {
 
@@ -201,7 +201,7 @@ class StreamingKNN @Since("1.2.0") (
   @Since("1.2.0")
   def this() = this(1, 2)
 
-  protected var model: StreamingKNNModel = new StreamingKNNModel(null, 0.0)
+  protected var model: StreamingDistributedKNNModel = new StreamingDistributedKNNModel(null, 0.0)
 
   /**
    * Set the number of clusters.
@@ -225,7 +225,7 @@ class StreamingKNN @Since("1.2.0") (
    * Return the latest model.
    */
   @Since("1.2.0")
-  def updatedModel(): StreamingKNNModel = {
+  def updatedModel(): StreamingDistributedKNNModel = {
     model
   }
 
@@ -239,8 +239,8 @@ class StreamingKNN @Since("1.2.0") (
    */
   def trainOn(data: DStream[LabeledPoint]) {
     val sc = data.context.sparkContext
-    val trees = (0 until nPartitions).map(i => i -> new MTreeTest())
-    model = new StreamingKNNModel(sc.parallelize(trees, nPartitions), 0)
+    val trees = (0 until nPartitions).map(i => i -> new MTreeLP())
+    model = new StreamingDistributedKNNModel(sc.parallelize(trees, nPartitions), 0)
     data.foreachRDD { (rdd, time) =>
       val irdd = rdd.map(v => scala.util.Random.nextInt(nPartitions) -> v).groupByKey()
       val updated = irdd.join(model.casebase).map{ case (idx, (ps, tree)) =>  
@@ -251,7 +251,7 @@ class StreamingKNN @Since("1.2.0") (
       }
       updated.cache()
       val s = updated.count()
-      if(s > 0) model = new StreamingKNNModel(updated, s)
+      if(s > 0) model = new StreamingDistributedKNNModel(updated, s)
       
       //val size = updated.map{ case (_, t) => t.getSize }.sum
       //println("Model size: " + size)
