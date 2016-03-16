@@ -30,7 +30,10 @@ import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
 import java.io.Serializable;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.Comparator;
+import java.util.Iterator;
 import java.util.List;
 import java.util.TreeMap;
 
@@ -38,11 +41,13 @@ import xxl.core.collections.containers.MapContainer;
 import xxl.core.collections.queues.DynamicHeap;
 import xxl.core.cursors.Cursor;
 import xxl.core.cursors.filters.Taker;
+import xxl.core.cursors.sorters.MergeSorter;
 import xxl.core.functions.AbstractFunction;
 import xxl.core.functions.Constant;
 import xxl.core.functions.Function;
 import xxl.core.indexStructures.MTree;
 import xxl.core.indexStructures.ORTree;
+import xxl.core.indexStructures.SortBasedBulkLoading;
 import xxl.core.indexStructures.Sphere;
 import xxl.core.indexStructures.Tree.Query.Candidate;
 import xxl.core.io.converters.ConvertableConverter;
@@ -149,14 +154,15 @@ import xxl.core.spatial.points.LabeledPoint;
  * @see xxl.core.spatial.points.Point
  * @see xxl.core.spatial.rectangles.Rectangle
  */
-public class MTreeTest implements Serializable {
+public class MTreeLP implements Serializable {
 
 	/**
 	 * 
 	 */
 	private static final long serialVersionUID = -4784817130749649598L;
 	private MTree tree;
-	private int size = 0;
+	private int leafCount = 0;
+	private ArrayList<LabeledPoint> elements;
 	//private CounterContainer upperContainer;
 	//private CounterContainer lowerContainer;
 	//private BufferedContainer bufferedContainer;
@@ -207,6 +213,19 @@ public class MTreeTest implements Serializable {
 			}
 		);
 	}
+	
+
+	/**
+	 * A factory method returning a Comparator defining an order on points
+	 * according to their first dimension. <br>
+	 * This is only needed for sort-based bulk insertion.
+	 */
+	static Comparator COMPARE_X_AXIS = new Comparator() {
+		public int compare (Object point1, Object point2) {
+			return ((LabeledPoint)point1).getValue(0) < ((LabeledPoint)point2).getValue(0) ? -1 :
+				   ((LabeledPoint)point1).getValue(0) == ((LabeledPoint)point2).getValue(0) ? 0 : 1;
+		}
+	};
 
 	/**
 	 * Returns a converter that serializes the descriptors of
@@ -249,7 +268,7 @@ public class MTreeTest implements Serializable {
 	}
 
 	
-	public MTreeTest () {
+	public MTreeLP () {
 
 		int minCapacity = 10;
 		int maxCapacity = 25;
@@ -260,17 +279,36 @@ public class MTreeTest implements Serializable {
 		// container for storing the nodes and their minimum and maximum
 		// capacity
 		mTree.initialize(getDescriptor, new MapContainer(new TreeMap()), minCapacity, maxCapacity);
+		elements = new ArrayList<LabeledPoint>();
 		tree = mTree;
 		
 	}
 	
 	public void insert(float[] point, float label) {
 		//Convertable cpoint = (Convertable) new LabeledPoint(point, label);
-		tree.insert(new LabeledPoint(point, label));
-		size++;
+		LabeledPoint pa = new LabeledPoint(point, label);
+		tree.insert(pa);
+		elements.add(pa);
+		leafCount++;
 	}
 	
-	public int getSize() { return size; }
+	public void insert(LabeledPoint lp) {
+		tree.insert(lp);
+		elements.add(lp);
+		leafCount++;
+	}
+	
+	/* The array must be sorted */
+	public void bulkInsert(LabeledPoint[] bulk){
+		
+		Iterator<LabeledPoint> cursor = Arrays.asList(bulk).iterator();
+		new SortBasedBulkLoading(tree, cursor, new Constant(tree.getContainer));
+	}
+	
+	public int getSize() { return leafCount; }
+	
+	public Iterator<LabeledPoint> getIterator() { return elements.iterator(); }
+	
 	
 	public List<Pair<Double, LabeledPoint>> kNNQuery(int k, float[] point) {		
 		// consuming one further input element applying the mapping function
@@ -290,7 +328,6 @@ public class MTreeTest implements Serializable {
 			k
 		);
 		
-		//System.out.println("Tree fucking size: " + tree.height());
 		List<Pair<Double, LabeledPoint>> output = new ArrayList<Pair<Double, LabeledPoint>>(); 
 		while (cursor.hasNext()) {
 			Sphere next = (Sphere)((Candidate)cursor.next()).descriptor();
@@ -334,8 +371,9 @@ public class MTreeTest implements Serializable {
         //ois.defaultReadObject();
 
         //notice the order of read and write should be same
-        int height = ois.readInt();
-        size = ois.readInt();
+    	int height = ois.readInt();
+        leafCount = ois.readInt();
+        elements = (ArrayList) ois.readObject();
         Sphere rd = (Sphere) ois.readObject();
         Object rpi = ois.readObject();
         
@@ -343,9 +381,9 @@ public class MTreeTest implements Serializable {
 		final MTree mTree = new MTree(MTree.HYPERPLANE_SPLIT);
 		if(rpi != null && rd != null) {
 			ORTree.IndexEntry rootEntry = (ORTree.IndexEntry) ((ORTree.IndexEntry)mTree.createIndexEntry(height)).initialize(rd).initialize(rpi);
-			mTree.initialize(rootEntry, MTreeTest.getDescriptor, new MapContainer(new TreeMap()), 10, 25);
+			mTree.initialize(rootEntry, MTreeLP.getDescriptor, new MapContainer(new TreeMap()), 10, 25);
 		} else {
-			mTree.initialize(MTreeTest.getDescriptor, new MapContainer(new TreeMap()), 10, 25);
+			mTree.initialize(MTreeLP.getDescriptor, new MapContainer(new TreeMap()), 10, 25);
 		}
 		tree = mTree;         
     }
@@ -355,13 +393,14 @@ public class MTreeTest implements Serializable {
         
 		Object rootPageId = null;
 		Sphere rootDescriptor = null;
-        if(size > 0) {
+        if(leafCount > 0) {
         	rootPageId = tree.rootEntry().id();   
         	rootDescriptor = (Sphere) tree.rootDescriptor();
         }
         
         oos.writeInt(tree.height());
-        oos.writeInt(size);
+        oos.writeInt(leafCount);
+        oos.writeObject(elements);
         oos.writeObject(rootDescriptor);
         oos.writeObject(rootPageId);
     }
