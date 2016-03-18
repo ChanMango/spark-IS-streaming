@@ -4,7 +4,7 @@ package org.ugr.sci2s.mllib.test
 import org.apache.spark._
 import org.apache.spark.streaming._
 import org.apache.spark.mllib.regression.LabeledPoint
-import org.apache.spark.mllib.clustering.StreamingDistributedKNN
+import org.apache.spark.mllib.feature.StreamingDistributedKNN
 import org.apache.spark.annotation.Since
 
 object FSMLtest {
@@ -16,17 +16,16 @@ object FSMLtest {
 
     val conf = new SparkConf().setMaster("local[2]").setAppName("MLStreamingTest")
     val ssc = new StreamingContext(conf, Seconds(1))
+    val k = 1
 
     val trainingData = ssc.textFileStream("/home/sramirez/datasets/poker-5-fold/streaming/poker-small.tra/").map(LabeledPoint.parse)
     val testData = ssc.textFileStream("/home/sramirez/datasets/poker-5-fold/streaming/poker-small.tst/").map(LabeledPoint.parse)
     
-    val model = new StreamingDistributedKNN()
-      .setK(1)
-      .setNPartitions(2)
+    val model = new StreamingDistributedKNN().setNPartitions(10)
 
     model.trainOn(trainingData)
-    model.predictOnValues(testData).filter(t => t._1 == t._2).count().print()
-        //.transform(_.repartition(1)).saveAsTextFiles("/home/sramirez/output", "txt")
+    model.predictOnValues(testData, k).filter{ case (label, pred) => label == pred}.count
+        .transform(_.repartition(1)).saveAsTextFiles("/home/sramirez/output", "txt")
     
 
     ssc.start()

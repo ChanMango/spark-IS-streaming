@@ -37,6 +37,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.TreeMap;
 
+import xxl.core.collections.containers.Container;
 import xxl.core.collections.containers.MapContainer;
 import xxl.core.collections.queues.DynamicHeap;
 import xxl.core.cursors.Cursor;
@@ -163,9 +164,6 @@ public class MTreeLP implements Serializable {
 	private MTree tree;
 	private int leafCount = 0;
 	private ArrayList<LabeledPoint> elements;
-	//private CounterContainer upperContainer;
-	//private CounterContainer lowerContainer;
-	//private BufferedContainer bufferedContainer;
 	
 
 	/**
@@ -273,19 +271,40 @@ public class MTreeLP implements Serializable {
 		int minCapacity = 10;
 		int maxCapacity = 25;
 		// generating a new instance of the class M-Tree or Slim-Tree
-		final MTree mTree = new MTree(MTree.HYPERPLANE_SPLIT);
+		tree = new MTree(MTree.HYPERPLANE_SPLIT);
 
 		// initialize the MTree with the descriptor-factory method, a
 		// container for storing the nodes and their minimum and maximum
 		// capacity
-		mTree.initialize(getDescriptor, new MapContainer(new TreeMap()), minCapacity, maxCapacity);
+		tree.initialize(getDescriptor, new MapContainer(new TreeMap()), minCapacity, maxCapacity);
+		elements = new ArrayList<LabeledPoint>();		
+	}
+	
+	public MTreeLP (LabeledPoint[] bulk) {
+
+		int minCapacity = 10;
+		int maxCapacity = 25;
+		// generating a new instance of the class M-Tree or Slim-Tree
+		tree = new MTree(MTree.HYPERPLANE_SPLIT);
+
+		// initialize the MTree with the descriptor-factory method, a
+		// container for storing the nodes and their minimum and maximum
+		// capacity
+		Container container = new MapContainer(new TreeMap());
+		tree.initialize(getDescriptor, container, minCapacity, maxCapacity);
+		
+		/** Bulk-load all initial elements */
+		Iterator<LabeledPoint> cursor = Arrays.asList(bulk).iterator();
+		new SortBasedBulkLoading(tree, cursor, new Constant(container));
+
+		/** Add elements to the iterator **/
 		elements = new ArrayList<LabeledPoint>();
-		tree = mTree;
+		for(int i = 0; i < bulk.length; i++) elements.add(bulk[i]);
+		leafCount += bulk.length;
 		
 	}
 	
 	public void insert(float[] point, float label) {
-		//Convertable cpoint = (Convertable) new LabeledPoint(point, label);
 		LabeledPoint pa = new LabeledPoint(point, label);
 		tree.insert(pa);
 		elements.add(pa);
@@ -299,15 +318,18 @@ public class MTreeLP implements Serializable {
 	}
 	
 	/* The array must be sorted */
-	public void bulkInsert(LabeledPoint[] bulk){
-		
+	public void bulkInsert(LabeledPoint[] bulk){		
 		Iterator<LabeledPoint> cursor = Arrays.asList(bulk).iterator();
-		new SortBasedBulkLoading(tree, cursor, new Constant(tree.getContainer));
+		new SortBasedBulkLoading(tree, cursor, tree.determineContainer);		
+		for(int i = 0; i < bulk.length; i++) elements.add(bulk[i]);
+		leafCount += bulk.length;
 	}
 	
 	public int getSize() { return leafCount; }
 	
-	public Iterator<LabeledPoint> getIterator() { return elements.iterator(); }
+	public int getHeight() { return tree.height();}
+	
+	public Iterator<LabeledPoint> getIterator() { return tree.query(tree.rootDescriptor(), 0); }
 	
 	
 	public List<Pair<Double, LabeledPoint>> kNNQuery(int k, float[] point) {		
@@ -317,7 +339,6 @@ public class MTreeLP implements Serializable {
 		LabeledPoint fpoint = new LabeledPoint(point);
 		final Sphere queryObject = new Sphere(fpoint, 0.0, centerConverter(fpoint.dimensions()));
 		
-
 		// consuming the k-nearest elements concerning the query object at the
 		// the target level;
 		// the order is determined by the comparator given to the dynamic heap
@@ -336,6 +357,36 @@ public class MTreeLP implements Serializable {
 			output.add(new Pair<Double, LabeledPoint>(distance, center));
 		}
 		
+		cursor.close();
+		return output;
+	}
+	
+	public List<LabeledPoint> overlapQuery(float[] point) {		
+		LabeledPoint fpoint = new LabeledPoint(point);
+		final Sphere queryObject = new Sphere(fpoint, 0.0, centerConverter(fpoint.dimensions()));
+		/*The result is a lazy cursor pointing to all leaf entries whose descriptors 
+		 * overlap with the given <tt>queryDescriptor</tt>. */
+		Cursor cursor = tree.query(queryObject);
+		
+		List<LabeledPoint> output = new ArrayList<LabeledPoint>(); 
+		while (cursor.hasNext()) {			
+			output.add((LabeledPoint) cursor.next());
+		}		
+		cursor.close();
+		return output;
+	}
+	
+	public List<LabeledPoint> overlapQuery(float[] point, double tau) {		
+		LabeledPoint fpoint = new LabeledPoint(point);
+		final Sphere queryObject = new Sphere(fpoint, tau, centerConverter(fpoint.dimensions()));
+		/*The result is a lazy cursor pointing to all leaf entries whose descriptors 
+		 * overlap with the given <tt>queryDescriptor</tt>. */
+		Cursor cursor = tree.query(queryObject);
+		
+		List<LabeledPoint> output = new ArrayList<LabeledPoint>(); 
+		while (cursor.hasNext()) {			
+			output.add((LabeledPoint) cursor.next());
+		}		
 		cursor.close();
 		return output;
 	}
@@ -376,6 +427,7 @@ public class MTreeLP implements Serializable {
         elements = (ArrayList) ois.readObject();
         Sphere rd = (Sphere) ois.readObject();
         Object rpi = ois.readObject();
+        //MapContainer container = (MapContainer) ois.readObject();
         
 		// generating a new instance of the class M-Tree or Slim-Tree
 		final MTree mTree = new MTree(MTree.HYPERPLANE_SPLIT);
@@ -403,5 +455,6 @@ public class MTreeLP implements Serializable {
         oos.writeObject(elements);
         oos.writeObject(rootDescriptor);
         oos.writeObject(rootPageId);
+        //oos.writeObject(container);
     }
 }

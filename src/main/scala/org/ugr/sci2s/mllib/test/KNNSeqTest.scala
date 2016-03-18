@@ -4,7 +4,7 @@ package org.ugr.sci2s.mllib.test
 import org.apache.spark._
 import org.apache.spark.streaming._
 import org.apache.spark.mllib.regression.LabeledPoint
-import org.apache.spark.mllib.clustering.StreamingDistributedKNN
+import org.apache.spark.mllib.feature.StreamingDistributedKNN
 import org.apache.spark.annotation.Since
 import xxl.core.indexStructures.mtrees.MTreeLP
 import collection.JavaConversions._

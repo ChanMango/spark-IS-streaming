@@ -194,23 +194,12 @@ class StreamingKNNModel (
  * }}}
  */
 @Since("1.2.0")
-class StreamingKNN @Since("1.2.0") (
-    @Since("1.2.0") var k: Int,
-    @Since("1.2.0") var nPartitions: Int) extends Logging with Serializable {
+class StreamingKNN @Since("1.2.0") (var nPartitions: Int) extends Logging with Serializable {
 
   @Since("1.2.0")
-  def this() = this(1, 2)
+  def this() = this(2)
 
-  protected var model: StreamingDistributedKNNModel = new StreamingDistributedKNNModel(null, 0.0)
-
-  /**
-   * Set the number of clusters.
-   */
-  @Since("1.2.0")
-  def setK(k: Int): this.type = {
-    this.k = k
-    this
-  }
+  protected var model: StreamingKNNModel = new StreamingKNNModel(null, 0.0)
 
   /**
    * Set the forgetfulness of the previous centroids.
@@ -225,7 +214,7 @@ class StreamingKNN @Since("1.2.0") (
    * Return the latest model.
    */
   @Since("1.2.0")
-  def updatedModel(): StreamingDistributedKNNModel = {
+  def updatedModel(): StreamingKNNModel = {
     model
   }
 
@@ -240,7 +229,7 @@ class StreamingKNN @Since("1.2.0") (
   def trainOn(data: DStream[LabeledPoint]) {
     val sc = data.context.sparkContext
     val trees = (0 until nPartitions).map(i => i -> new MTreeLP())
-    model = new StreamingDistributedKNNModel(sc.parallelize(trees, nPartitions), 0)
+    model = new StreamingKNNModel(sc.parallelize(trees, nPartitions), 0)
     data.foreachRDD { (rdd, time) =>
       val irdd = rdd.map(v => scala.util.Random.nextInt(nPartitions) -> v).groupByKey()
       val updated = irdd.join(model.casebase).map{ case (idx, (ps, tree)) =>  
@@ -251,7 +240,7 @@ class StreamingKNN @Since("1.2.0") (
       }
       updated.cache()
       val s = updated.count()
-      if(s > 0) model = new StreamingDistributedKNNModel(updated, s)
+      if(s > 0) model = new StreamingKNNModel(updated, s)
       
       //val size = updated.map{ case (_, t) => t.getSize }.sum
       //println("Model size: " + size)
@@ -272,7 +261,7 @@ class StreamingKNN @Since("1.2.0") (
    * @tparam K key type
    * @return DStream containing the input keys and the predictions as values (label, prediction)
    */
-  def predictOnValues(data: DStream[LabeledPoint]): DStream[(Float, Float)] = {
+  def predictOnValues(data: DStream[LabeledPoint], k: Int): DStream[(Float, Float)] = {
     //assertInitialized()
     data.transform(rdd => model.predict(rdd, k))
   }
