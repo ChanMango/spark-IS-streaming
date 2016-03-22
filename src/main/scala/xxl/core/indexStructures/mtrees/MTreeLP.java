@@ -325,6 +325,13 @@ public class MTreeLP implements Serializable {
 		leafCount += bulk.length;
 	}
 	
+	public boolean remove(float[] point) {
+		LabeledPoint fpoint = new LabeledPoint(point);
+		final Sphere queryObject = new Sphere(fpoint, 0.0, centerConverter(fpoint.dimensions()));
+		Object obj = tree.remove(queryObject);
+		return obj != null;
+	}
+	
 	public int getSize() { return leafCount; }
 	
 	public int getHeight() { return tree.height();}
