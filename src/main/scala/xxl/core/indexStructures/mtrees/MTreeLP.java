@@ -327,8 +327,7 @@ public class MTreeLP implements Serializable {
 	
 	public boolean remove(float[] point) {
 		LabeledPoint fpoint = new LabeledPoint(point);
-		final Sphere queryObject = new Sphere(fpoint, 0.0, centerConverter(fpoint.dimensions()));
-		Object obj = tree.remove(queryObject);
+		Object obj = tree.remove(fpoint);
 		return obj != null;
 	}
 	
