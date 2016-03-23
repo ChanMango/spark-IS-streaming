@@ -4,10 +4,10 @@ package org.ugr.sci2s.mllib.test
 import org.apache.spark._
 import org.apache.spark.streaming._
 import org.apache.spark.mllib.regression.LabeledPoint
-import org.apache.spark.mllib.feature.StreamingDistributedKNN
+import org.apache.spark.mllib.feature._
 import org.apache.spark.annotation.Since
 
-object FSMLtest {
+object MLStreamingTest {
 
   def main(args: Array[String]): Unit = {
     
@@ -16,7 +16,7 @@ object FSMLtest {
 
     val conf = new SparkConf().setMaster("local[2]").setAppName("MLStreamingTest")
     val ssc = new StreamingContext(conf, Seconds(1))
-    val k = 1
+    val k = 3
 
     val trainingData = ssc.textFileStream("/home/sramirez/datasets/poker-5-fold/streaming/poker-small.tra/").map(LabeledPoint.parse)
     val testData = ssc.textFileStream("/home/sramirez/datasets/poker-5-fold/streaming/poker-small.tst/").map(LabeledPoint.parse)

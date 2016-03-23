@@ -24,10 +24,11 @@ object OverlapSeqTest {
     
     val nindices = points.map{ p => 
       val nearest = tree.kNNQuery(1, points.seq(0).features.toArray.map(_.toFloat)).map(t => (t.getDistance.toFloat, t.getPoint)).get(0)
-      tree.overlapQuery(nearest._2.getFeatures, 5.5).length
+      tree.overlapQuery(nearest._2.getFeatures, 15).length
     }
     
-    println("Number of matches in range: " + nindices.filter(_ != 1).length)
+    println("Number of matches in range: " + nindices.filter(_ > 1).length)
+    println("Indices: " + nindices.mkString(","))
   }
 
 }
