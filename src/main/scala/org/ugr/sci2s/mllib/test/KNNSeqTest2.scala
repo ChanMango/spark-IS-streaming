@@ -19,12 +19,12 @@ object KNNSeqTest2 {
     
     // Create a local StreamingContext with two working thread and batch interval of 1 second.
     // The master requires 2 cores to prevent from a starvation scenario.
-    val k = 15
+    val k = 1
     val points = scala.util.Random.shuffle(scala.io.Source.fromFile("/home/sramirez/datasets/poker-5-fold/streaming/poker-small.tra/part-asd.dat")
         .getLines().toSeq.map(LabeledPoint.parse))
     val tree = new MTreeWrapper(points.map(lp => new DataLP(lp.features.toArray.map(_.toFloat), lp.label.toFloat)).toArray)
     val predict = (p: LabeledPoint) => {
-      val neigh = tree.kNNQuery(k, p.features.toArray.map(_.toFloat)).toArray.map(t => (t.distance, t.data.asInstanceOf[DataLP]))
+      val neigh = tree.kNNQuery(k, p.features.toArray.map(_.toFloat)).map(t => (t.distance, t.data.asInstanceOf[DataLP]))
       val pred = neigh.map(_._2.getLabel).groupBy(identity).maxBy(_._2.size)._1
       (p.label, pred)
     }    

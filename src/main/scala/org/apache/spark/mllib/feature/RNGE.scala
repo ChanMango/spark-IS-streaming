@@ -65,7 +65,7 @@ object RNGE {
       val toRemove = neigs.zipWithIndex.filter(t => noisy(t._2 + 1)).map(_._1) // Remove noisy oldies
       (toAdd, toRemove)
       
-    }.persist(StorageLevel.MEMORY_AND_DISK)
+    }
     
     (edited.keys.filter(_ != null), edited.flatMap(_._2))
   }
