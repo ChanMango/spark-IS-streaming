@@ -224,6 +224,10 @@ public class MTreeWrapper extends MTree<DataLP> implements Serializable {
 		return this.overlapQuery(point, 0.0);
 	}
 	
+	public List<ResultItem> searchIndices(float[] point, double tau) {
+		return this.getIndices(new DataLP(point), tau);
+	}
+	
 	public List<ResultItem> overlapQuery(float[] point, double radius) {
 		List<ResultItem> results = new ArrayList<ResultItem>();
 		Query query = getNearestByRange(new DataLP(point), radius);

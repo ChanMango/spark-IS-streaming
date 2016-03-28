@@ -2,17 +2,20 @@ package mtree;
 
 import java.io.Serializable;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Deque;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.Iterator;
+import java.util.LinkedList;
+import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.PriorityQueue;
+import java.util.Queue;
 import java.util.Set;
 
 import mtree.SplitFunction.SplitResult;
-import mtree.utils.Pair;
 
 
 /**
@@ -252,7 +255,58 @@ public class MTree<DATA> {
 		private int limit;
 	}
 
-
+	public List<ResultItem> getIndices(DATA data, double tau) {
+		Queue<Node> pendingQueue = new LinkedList<Node>();
+		List<ResultItem> indexQueue = new ArrayList<ResultItem>();
+		pendingQueue.add(MTree.this.root);
+		
+		while(!pendingQueue.isEmpty()) {
+			Node node = pendingQueue.poll();
+			Collection<IndexItem> col = node.children.values();
+			List<IndexItem> childrens = new ArrayList<IndexItem>();
+			double minValue = Double.POSITIVE_INFINITY;
+			int minPos = 0; int i = 0;
+			for(IndexItem ii : col) {
+				double dist = MTree.this.distanceFunction.calculate(data, ii.data);
+				if(minValue < dist) {
+					minPos = i;
+					minValue = dist;
+				}
+				childrens.add(ii);
+				i++;
+			}
+			
+			double leftDistance = MTree.this.distanceFunction.calculate(data, childrens.get(minPos).data);
+			if(childrens.get(minPos) instanceof MTree.Entry) {
+				@SuppressWarnings("unchecked")
+				Entry entry = (Entry)childrens.get(minPos);
+				indexQueue.add(new ResultItem(entry.data, leftDistance));
+			} else {
+				@SuppressWarnings("unchecked")
+				Node childNode = (Node)childrens.get(minPos);
+				pendingQueue.add(childNode);
+			}
+			
+			for(int j = 0; j < childrens.size(); j++) {
+				if(j != minPos) {
+					double rightDistance = MTree.this.distanceFunction.calculate(data, childrens.get(j).data);
+					if(rightDistance - leftDistance <= tau) {
+						if(childrens.get(j) instanceof MTree.Entry) {
+							@SuppressWarnings("unchecked")
+							Entry entry = (Entry)childrens.get(j);
+							indexQueue.add(new ResultItem(entry.data, rightDistance));
+						} else {
+							@SuppressWarnings("unchecked")
+							Node childNode = (Node)childrens.get(j);
+							pendingQueue.add(childNode);
+						}
+					}
+				}
+			}
+			
+		}
+		return indexQueue;
+	}
 	
 	/**
 	 * The default minimum capacity of nodes in an M-Tree, when not specified in
@@ -440,10 +494,14 @@ public class MTree<DATA> {
 	
 
 	private class IndexItem implements Serializable {
+		/**
+		 * 
+		 */
+		private static final long serialVersionUID = -5069292556337067234L;
 		DATA data;
 		protected double radius;
 		double distanceToParent;
-
+		
 		private IndexItem(DATA data) {
 			this.data = data;
 			this.radius = 0;
