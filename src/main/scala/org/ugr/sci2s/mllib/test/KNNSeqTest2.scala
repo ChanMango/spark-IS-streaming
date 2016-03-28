@@ -6,7 +6,6 @@ import org.apache.spark.streaming._
 import org.apache.spark.mllib.regression.LabeledPoint
 import org.apache.spark.mllib.feature.StreamingDistributedKNN
 import org.apache.spark.annotation.Since
-import xxl.core.indexStructures.mtrees.MTreeLP
 import collection.JavaConversions._
 import org.apache.spark.mllib.knn.KNNUtils
 import org.apache.spark.mllib.feature.LPUtils
