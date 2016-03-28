@@ -85,13 +85,14 @@ class StreamingDistributedKNNModel (
   def kNNQuery(data: RDD[LabeledPoint], k: Int): RDD[(LabeledPoint, Array[(LabeledPoint, Int)])] = {
     if(topTree != null) {
       val searchData = data.flatMap { vector =>
-          val indices = StreamingDistributedKNN.searchIndices(vector.features, topTree.value, indexMap, tau * k)
+          val indices = StreamingDistributedKNN.searchIndices(vector.features, topTree.value, indexMap, tau)
             .map(i => (i, vector))
 
           assert(indices.filter(_._1 == -1).length == 0, s"indices must be non-empty: $vector")
           indices
       }.partitionBy(new HashPartitioner(trees.partitions.length))
 
+      logInfo("Number of indices retrieved: " + searchData.keys.count())
       // for each partition, search points within corresponding child tree
       val results = searchData.zipPartitions(trees) {
         (childData, trees) =>
@@ -472,20 +473,19 @@ object StreamingDistributedKNN {
 
   
   def searchIndex(v: Vector, tree: MTreeWrapper, index: Map[Vector, Int]): Int = {
-    val jlp = tree.kNNQuery(1, LPUtils.toJavaLP(new LabeledPoint(0, v)).getFeatures)(0).data        
+    val jlp: DataLP = tree.kNNQuery(1, LPUtils.toJavaLP(new LabeledPoint(0, v)).getFeatures).get(0).data        
     index.getOrElse(LPUtils.fromJavaLP(jlp).features, -1)
   }
   
-  // We get all the sub-trees that overlap with our point
-  def searchIndices(v: Vector, tree: MTreeWrapper, index: Map[Vector, Int]): Seq[Int] = {
-    val jlps = tree.overlapQuery(LPUtils.toJavaLP(new LabeledPoint(0, v)).getFeatures).map(_.data)
-    jlps.map(jlp => index.getOrElse(LPUtils.fromJavaLP(jlp).features, -1)).toSeq
-  }
-  
-  // We get all the sub-trees that overlap with our point
-  def searchIndices(v: Vector, tree: MTreeWrapper, index: Map[Vector, Int], tau: Double): Seq[Int] = {
+  // We get all the sub-trees that overlap with our pointse
+  /*def searchIndices(v: Vector, tree: MTreeWrapper, index: Map[Vector, Int], tau: Double): Seq[Int] = {
     val nearest = tree.kNNQuery(1, LPUtils.toJavaLP(new LabeledPoint(0, v)).getFeatures)(0).data   
     val jlps = tree.overlapQuery(nearest.getFeatures, tau).map(_.data)
+    jlps.map(jlp => index.getOrElse(LPUtils.fromJavaLP(jlp).features, -1)).toSeq
+  }*/
+  
+  def searchIndices(v: Vector, tree: MTreeWrapper, index: Map[Vector, Int], tau: Double): Seq[Int] = {
+    val jlps = tree.searchIndices(LPUtils.toJavaLP(new LabeledPoint(0, v)).getFeatures, tau).map(_.data)
     jlps.map(jlp => index.getOrElse(LPUtils.fromJavaLP(jlp).features, -1)).toSeq
   }
 }
