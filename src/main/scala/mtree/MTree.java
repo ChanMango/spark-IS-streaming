@@ -268,7 +268,7 @@ public class MTree<DATA> {
 			int minPos = 0; int i = 0;
 			for(IndexItem ii : col) {
 				double dist = MTree.this.distanceFunction.calculate(data, ii.data);
-				if(minValue < dist) {
+				if(dist < minValue) {
 					minPos = i;
 					minValue = dist;
 				}

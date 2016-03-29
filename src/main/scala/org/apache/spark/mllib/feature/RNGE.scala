@@ -1,6 +1,7 @@
 package org.apache.spark.mllib.feature
 
 import org.apache.spark.rdd.RDD
+import org.apache.spark.SparkContext._
 import org.apache.spark.mllib.regression.LabeledPoint
 import org.apache.spark.mllib.feature.{StreamingDistributedKNN => SDK}
 import org.apache.spark.mllib.knn.VectorWithNorm
@@ -62,11 +63,11 @@ object RNGE {
       /* Decide whether to add the new example and to remove old noisy edges */
       val noisy = (0 until preds.length).map(i => preds(i) != lpnorms(i)._1)
       val toAdd = if(!noisy(0)) point else null // Accepted the insertion of new example (first)
-      val toRemove = neigs.zipWithIndex.filter(t => noisy(t._2 + 1)).map(_._1) // Remove noisy oldies
+      val toRemove = neigs.zipWithIndex.filter(t => noisy(t._2 + 1)).map(_._1.swap) // Remove noisy oldies
       (toAdd, toRemove)
       
     }
     
-    (edited.keys.filter(_ != null), edited.flatMap(_._2))
+    (edited.keys.filter(_ != null), edited.flatMap(_._2).mapPartitions(it => it.toSet.toIterator))
   }
 }
