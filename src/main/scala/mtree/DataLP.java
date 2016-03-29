@@ -1,6 +1,7 @@
 package mtree;
 
 import java.io.Serializable;
+import java.util.Arrays;
 
 import mtree.DistanceFunctions.EuclideanCoordinate;
 
@@ -30,11 +31,7 @@ public class DataLP implements EuclideanCoordinate, Comparable<DataLP>, Serializ
   
   @Override
   public int hashCode() {
-    float c = 0;
-    for (int i = 0; i < values.length; i++)
-      c += values[i];
-    c += label;
-    return (int)c%1117;
+	  return Arrays.hashCode(values);
   }
   
   @Override
