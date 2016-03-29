@@ -201,9 +201,11 @@ public class MTreeWrapper extends MTree<DataLP> implements Serializable {
 		for(int i = 0; i < bulk.length; i++) this.insert(bulk[i]);
 	}
 	
-	public boolean remove(float[] point) {
-		DataLP fpoint = new DataLP(point);
-		return remove(fpoint);
+	public boolean remove(DataLP point) {
+		if(elements.remove(point)) {
+			super.remove(point);
+		}		
+		return false;
 	}
 	
 	public int getSize() { return leafCount; }
@@ -220,14 +222,6 @@ public class MTreeWrapper extends MTree<DataLP> implements Serializable {
 		return results;
 	}
 	
-	public List<ResultItem> overlapQuery(float[] point) {
-		return this.overlapQuery(point, 0.0);
-	}
-	
-	public List<ResultItem> searchIndices(float[] point, double tau) {
-		return this.getIndices(new DataLP(point), tau);
-	}
-	
 	public List<ResultItem> overlapQuery(float[] point, double radius) {
 		List<ResultItem> results = new ArrayList<ResultItem>();
 		Query query = getNearestByRange(new DataLP(point), radius);
@@ -235,5 +229,13 @@ public class MTreeWrapper extends MTree<DataLP> implements Serializable {
 			results.add(ri);
 		}
 		return results;
+	}
+	
+	public List<ResultItem> overlapQuery(float[] point) {
+		return this.overlapQuery(point, 0.0);
+	}
+	
+	public List<ResultItem> searchIndices(float[] point, double tau) {
+		return this.getIndices(new DataLP(point), tau);
 	}
 }
