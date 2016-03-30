@@ -25,14 +25,8 @@ License along with this library;  If not, see <http://www.gnu.org/licenses/>.
 
 package org.apache.spark.mllib.feature;
 
-import java.io.IOException;
-import java.io.ObjectInputStream;
-import java.io.ObjectOutputStream;
 import java.io.Serializable;
 import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.Comparator;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
@@ -42,11 +36,8 @@ import mtree.ComposedSplitFunction;
 import mtree.DistanceFunction;
 import mtree.DistanceFunctions;
 import mtree.MTree;
-import mtree.MTree.Query;
-import mtree.MTree.ResultItem;
 import mtree.PartitionFunctions;
 import mtree.PromotionFunction;
-import mtree.DistanceFunctions.EuclideanCoordinate;
 import mtree.DataLP;
 import mtree.utils.Pair;
 import mtree.utils.Utils;

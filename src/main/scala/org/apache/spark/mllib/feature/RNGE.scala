@@ -9,6 +9,8 @@ import scala.collection.mutable.ArrayBuffer
 import scala.collection.mutable.HashMap
 import org.apache.spark.storage.StorageLevel
 
+import org.apache.spark.mllib.feature.StreamingDistributedKNN._
+
 /**
  * @author sramirez
  */
@@ -17,21 +19,23 @@ import org.apache.spark.storage.StorageLevel
 
 object RNGE {
   
-  def edition(neighbors: RDD[(LabeledPoint, Array[(LabeledPoint, Int)])], secondOrder: Boolean = false) = {
+  case class TreeLPNorm(point: TreeLP, norm: VectorWithNorm)
+  
+  def edition(neighbors: RDD[(TreeLP, Array[TreeLP])], secondOrder: Boolean = false) = {
     
-    val edited = neighbors.map{ case (point, neigs) => 
+    neighbors.flatMap{ case (p, neigs) => 
       
-      val lpnorms = (point.label, new VectorWithNorm(point.features), -1) +:
-        neigs.map(n => (n._1.label, new VectorWithNorm(n._1.features), n._2))
+      val lpnorms = new TreeLPNorm(p, new VectorWithNorm(p.point.features)) +:
+        neigs.map(q => new TreeLPNorm(q, new VectorWithNorm(q.point.features)))
         
       val graph = Array.fill[Boolean](lpnorms.length, lpnorms.length)(true)
       
       /* Compute the relative neighbor graph for edition (RNG-E) */
       for(i <- 0 until lpnorms.length) {
         for(j <- 0 until lpnorms.length) {
-          val dij = lpnorms(i)._2.fastDistance(lpnorms(j)._2)
+          val dij = lpnorms(i).norm.fastDistance(lpnorms(j).norm)
           for(k <- 0 until lpnorms.length if k != i && k != j) {
-            if(dij > math.max(lpnorms(i)._2.fastDistance(lpnorms(k)._2), lpnorms(j)._2.fastDistance(lpnorms(k)._2)))
+            if(dij > math.max(lpnorms(i).norm.fastDistance(lpnorms(k).norm), lpnorms(j).norm.fastDistance(lpnorms(k).norm)))
               graph(i)(j) = false
           }
         } 
@@ -41,19 +45,22 @@ object RNGE {
       var votes = for(i <- 0 until lpnorms.length) yield HashMap[Double, Int]()
       for(i <- 0 until lpnorms.length){
         for(j <- 0 until lpnorms.length){
+          val jlabel = lpnorms(j).point.point.label
           if(graph(i)(j) && i != j) 
-            votes(i) += lpnorms(j)._1 -> (votes(i).getOrElse(lpnorms(j)._1, 0) + 1)
+            votes(i) += jlabel -> (votes(i).getOrElse(jlabel, 0) + 1)
         }
       }
       var preds = votes.map(_.maxBy(_._2)._1)
       
       if(secondOrder) {        
         /* 2nd order voting */
-        for(i <- 0 until lpnorms.length if preds(i) != lpnorms(i)._1){
+        for(i <- 0 until lpnorms.length if preds(i) != lpnorms(i).point.point.label){
+          val ilabel = lpnorms(i).point.point.label
           for(j <- 0 until lpnorms.length){
-            if(graph(i)(j) && i != j && lpnorms(i)._1 == lpnorms(j)._1){
+            if(graph(i)(j) && i != j && ilabel == lpnorms(j).point.point.label){
+              val jlabel = lpnorms(j).point.point.label
               for(k <- 0 until lpnorms.length if graph(j)(k))
-                votes(i) += lpnorms(j)._1 -> (votes(i).getOrElse(lpnorms(j)._1, 0) + 1)
+                votes(i) += jlabel -> (votes(i).getOrElse(jlabel, 0) + 1)
             }
           }
         }
@@ -61,13 +68,10 @@ object RNGE {
       }
       
       /* Decide whether to add the new example and to remove old noisy edges */
-      val noisy = (0 until preds.length).map(i => preds(i) != lpnorms(i)._1)
-      val toAdd = if(!noisy(0)) point else null // Accepted the insertion of new example (first)
-      val toRemove = neigs.zipWithIndex.filter(t => noisy(t._2 + 1)).map(_._1.swap) // Remove noisy oldies
-      (toAdd, toRemove)
-      
+      val noisy = (0 until preds.length).map(i => preds(i) != lpnorms(i).point.point.label)
+      p.action = INSERT // Accepted the insertion of new example (first)
+      val toRemove = neigs.zipWithIndex.filter(t => noisy(t._2 + 1)).map{p => p._1.action = REMOVE; p._1} // Remove noisy oldies
+      if(!noisy(0)) p +: toRemove else toRemove      
     }
-    
-    (edited.keys.filter(_ != null), edited.flatMap(_._2).mapPartitions(it => it.toSet.toIterator))
   }
 }
