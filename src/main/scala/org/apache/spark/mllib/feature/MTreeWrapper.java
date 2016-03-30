@@ -165,7 +165,7 @@ public class MTreeWrapper extends MTree<DataLP> implements Serializable {
 	};
 	
 	public MTreeWrapper () {
-		super(2, DistanceFunctions.EUCLIDEAN, 
+		super(DistanceFunctions.EUCLIDEAN, 
 				new ComposedSplitFunction<DataLP>(
 					nonRandomPromotion,
 					new PartitionFunctions.BalancedPartition<DataLP>()
