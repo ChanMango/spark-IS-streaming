@@ -23,6 +23,8 @@ import scala.collection.mutable.Queue
 import collection.JavaConversions._
 import breeze.linalg.{DenseVector => BDV, Vector => BV}
 import breeze.stats._
+
+import org.apache.spark.mllib.rdd.MLPairRDDFunctions._ 
 import org.apache.spark.SparkContext._
 import org.apache.spark.Logging
 import org.apache.spark.annotation.Since
@@ -81,17 +83,17 @@ class StreamingDistributedKNNModel (
     val topTree: Broadcast[MTreeWrapper],
     val trees: RDD[MTreeWrapper],
     val indexMap: Map[Vector, Int],
-    val tau: Double) extends Serializable with Logging {
+    var tau: Double) extends Serializable with Logging {
   
   def kNNQuery(data: RDD[LabeledPoint], k: Int): RDD[(TreeLP, Array[TreeLP])] = {
     if(topTree != null) {
-      val searchData = data.flatMap { vector =>
+      val indexedData = data.zipWithIndex.map(_.swap).partitionBy(new HashPartitioner(trees.partitions.length)).cache
+      val searchData = indexedData.flatMap { case (idx, vector) =>
           val indices = searchIndices(vector.features, topTree.value, indexMap, tau)
-            .map(i => (i, vector))
+            .map(i => (i, (vector, idx)))
 
           assert(indices.filter(_._1 == -1).length == 0, s"indices must be non-empty: $vector")
           indices
-          //Array(indices -> vector)
       }.partitionBy(new HashPartitioner(trees.partitions.length))
 
       // for each partition, search points within corresponding child tree
@@ -100,20 +102,28 @@ class StreamingDistributedKNNModel (
           val tree = trees.next()
           assert(!trees.hasNext)
           childData.flatMap {
-            case (ipart, point) =>
+            case (ipart, (point, idx)) =>
               tree.kNNQuery(k, point.features.toArray.map(_.toFloat))
-                .map(pair => (point, (pair.data, pair.distance, ipart)))
+                .map(pair => (idx, (pair.data, pair.distance, ipart)))
           }
       }
   
       // merge results by point index together and keep topK results
-      //results.topByKey(k)(Ordering.by(-_._2)).map { case (point, seq) => 
-      //    (point, seq.map{ case(neigh, _, idx) => LPUtils.fromJavaLP(neigh) -> idx}) 
-      results.groupByKey().map { case (point, iter) =>
+      val neigs = results.topByKey(k)(Ordering.by(-_._2)).flatMap { case (lidx, iter) => 
+        iter.map{ case(neigh, _, idx) => 
+          lidx -> new TreeLP(LPUtils.fromJavaLP(neigh.asInstanceOf[DataLP]), idx, NONE)}
+      }
+      
+      indexedData.cogroup(neigs).values.map{ case(it1, it2) =>
+        val only = it1.toArray
+        val elemtn = new TreeLP(only(0), searchIndex(only(0).features, topTree.value, indexMap), NONE)
+        elemtn -> it2.toArray
+      }
+      /*results.groupByKey().map { case (point, iter) =>
         val neigh = iter.toArray.sortBy(-_._2).take(k).map{ case(neigh, _, idx) => new TreeLP(LPUtils.fromJavaLP(neigh.asInstanceOf[DataLP]), idx, NONE)}
         val treep = new TreeLP(point, searchIndex(point.features, topTree.value, indexMap), NONE)
         treep -> neigh
-      }
+      }*/
     } else {
       data.context.emptyRDD[(TreeLP, Array[TreeLP])]
     }
@@ -152,10 +162,13 @@ class StreamingDistributedKNNModel (
 class StreamingDistributedKNN (    
     var kGraph: Int,
     var nPartitions: Int,
+    var overlapDistance: Double,
     var sampleSizes: Array[Int],
     var seed: Long) extends Logging with Serializable {
 
-  def this() = this(10, 2, (100 to 1000 by 100).toArray, 26827651492L)
+  def this() = this(10, 2, -1, (100 to 1000 by 100).toArray, 26827651492L)
+  
+  private val DEFAULT_SIZE_ESTIMATION = 100000
 
   protected var model: StreamingDistributedKNNModel = new StreamingDistributedKNNModel(null, null, null, 0.0)
 
@@ -171,6 +184,11 @@ class StreamingDistributedKNN (
   def setNPartitions(np: Int): this.type = {
     require(np > 1)
     this.nPartitions = np
+    this
+  }
+  
+  def setOverlapDistance(od: Double): this.type = {
+    this.overlapDistance = od
     this
   }
   
@@ -206,9 +224,11 @@ class StreamingDistributedKNN (
   def trainOn(data: DStream[LabeledPoint]) {
     val sc = data.context.sparkContext
     val queue = new Queue[LabeledPoint]
+    var nelem = 0L
     
     data.foreachRDD { (rdd, time) =>
-      val nelem = rdd.count()
+      val csize = rdd.count()
+      nelem += csize
       if(model.topTree == null) {   
         // There is no master tree created yet
         if(nelem >= nPartitions) {
@@ -217,12 +237,14 @@ class StreamingDistributedKNN (
           val firstRDD = if(queue.size > 0) rdd.union(sc.parallelize(queue, nPartitions)) else rdd
           model = initializeModel(firstRDD)
           queue.clear()
+          nelem = 0
         } else {          
           queue ++= rdd.collect()
         }
       } else {
         if(isUnbalanced){ 
-          logInfo("Re-balancing the distributed m-tree. One or more sub-trees have grown too much.")
+          logInfo("Re-balancing the distributed m-tree." + 
+              "One or more sub-trees have grown too much.")
           // Re-balance the whole case-base. New topTree and a new re-partition process is started for sub-trees
           val casebase = model.trees.flatMap{ tree =>
             tree.getIterator.map(jlp => LPUtils.fromJavaLP(jlp)) 
@@ -230,16 +252,27 @@ class StreamingDistributedKNN (
           // Swap model
           val oldModel = model
           model = initializeModel(casebase)
-          //oldModel.trees.unpersist()
+          oldModel.trees.unpersist()
+          nelem = 0
         }
         // Insert new examples
-        if (nelem > 0){
+        if (csize > 0){
           // Swap model
           val oldModel = model
           model = RNGedition(rdd)
           logInfo("Number of instances in the case-base: " + model.trees.map(_.getSize).sum)
-          //model = insertNewExamples(rdd)
-          //oldModel.trees.unpersist()
+          oldModel.trees.unpersist()          
+          
+          val tau = if(nelem > DEFAULT_SIZE_ESTIMATION && overlapDistance < 0) {
+            nelem = 0
+            val allExamples = model.trees.flatMap(_.getIterator)
+              .map(lp => new VectorWithNorm(LPUtils.fromJavaLP(lp).features))
+            estimateTau(allExamples, sampleSizes, seed)
+          } else {
+            model.tau 
+          }
+          logInfo("Tau is: " + tau)
+          model.tau = tau
         }
       }
     }
@@ -248,7 +281,7 @@ class StreamingDistributedKNN (
   private def isUnbalanced() = {
     if(model != null){
       val sizes = model.trees.map(_.getSize) 
-      math.log(sizes.max) / math.log(2) > math.log(sizes.min) / math.log(2) * 2
+      math.log(sizes.max) / math.log(2) > math.log(sizes.min) / math.log(2) * 1.5
     } else {
       false
     }
@@ -259,18 +292,19 @@ class StreamingDistributedKNN (
       val rand = new XORShiftRandom(this.seed)
       val firstLoad = rdd.takeSample(false, this.nPartitions, rand.nextLong())
       val indexMap = firstLoad.map(_.features).zipWithIndex.toMap
-      //val bulkFirst = firstLoad.map( lp => (LPUtils.toJavaLP(lp), lp.features(0))).sortBy(_._2).map(_._1)
       val bTopTree = rdd.context.broadcast(new MTreeWrapper(firstLoad.map(lp => LPUtils.toJavaLP(lp))))
       
-      val tau = StreamingDistributedKNN.estimateTau(rdd.map(lp => 
-        new VectorWithNorm(lp.features)), sampleSizes, seed)
+      val tau = if(overlapDistance < 0) {
+        estimateTau(rdd.map(lp => 
+          new VectorWithNorm(lp.features)), sampleSizes, seed)
+      } else {
+        overlapDistance
+      }        
       logInfo("Tau is: " + tau)
       
       // Load the instances in the sub-trees
       val repartitioned = rdd.map(v => (v, null)).partitionBy(new KNNPartitioner(bTopTree, indexMap))
       val trees = repartitioned.mapPartitions { itr =>
-        // Sort elements by first dimension before bulk-loading
-        //val bulkElements = itr.toArray.map{ case(lp, _) => (lp, lp.features(0))}.sortBy(_._2).map(_._1)
         val childTree = new MTreeWrapper(itr.map(t => LPUtils.toJavaLP(t._1)).toArray)
         Iterator(childTree)
       }.persist(StorageLevel.MEMORY_AND_DISK)
@@ -280,20 +314,9 @@ class StreamingDistributedKNN (
   
   private def RNGedition(rdd: RDD[LabeledPoint]): StreamingDistributedKNNModel = {
       val localGraph = model.kNNQuery(rdd, kGraph)
-      val edited = RNGE.edition(localGraph)      
-      //logInfo("Elements to add: " + toAdd.count)
-      //logInfo("Elements to remove: " + toRemove.count)
-      //var newTrees = insertNewExamples(toAdd, model.trees)
-      //newTrees = removeExamples(toRemove, newTrees).persist(StorageLevel.MEMORY_AND_DISK)
-      val newTrees = editTrees(edited, model.trees).persist(StorageLevel.MEMORY_AND_DISK)
-      // New estimation of TAU
-      /*val allExamples = newTrees.flatMap(_.getIterator)
-      val tau = StreamingDistributedKNN.estimateTau(allExamples.map(lp => 
-        new VectorWithNorm(LPUtils.fromJavaLP(lp).features)), sampleSizes, seed)
-      logInfo("Tau is: " + tau)*/
-          
+      val edited = InstanceSelection.RNGE(localGraph)
+      val newTrees = editTrees(edited, model.trees).persist(StorageLevel.MEMORY_AND_DISK)          
       new StreamingDistributedKNNModel(model.topTree, newTrees, model.indexMap, model.tau)
-
   }
   
   private def editTrees(rdd: RDD[TreeLP], trees: RDD[MTreeWrapper]) = {
@@ -325,7 +348,7 @@ class StreamingDistributedKNN (
       }      
   }
   
-  /*private def insertNewExamples(rdd: RDD[LabeledPoint]) = {      
+  private def insertNewExamples(rdd: RDD[LabeledPoint]) = {      
       // Add new examples to the casebase
       val searchData = rdd.map { vector =>
           // Just use one index for insertion (exact insertion is not relevant)
@@ -343,35 +366,9 @@ class StreamingDistributedKNN (
             tree.insert(LPUtils.toJavaLP(lp))
           }
           Iterator(tree)
-      }.persist(StorageLevel.MEMORY_AND_DISK) 
-
-      // New estimation of TAU
-      val allExamples = newTrees.flatMap(_.getIterator)
-      val tau = StreamingDistributedKNN.estimateTau(allExamples.map(lp => 
-        new VectorWithNorm(LPUtils.fromJavaLP(lp).features)), sampleSizes, seed)
+      }.persist(StorageLevel.MEMORY_AND_DISK)
         
-      new StreamingDistributedKNNModel(model.topTree, newTrees, model.indexMap, tau)
-  }*/
-  
-  private def insertNewExamples(rdd: RDD[LabeledPoint], trees: RDD[MTreeWrapper]) = {      
-      // Add new examples to the casebase
-      val searchData = rdd.map { vector =>
-          // Just use one index for insertion (exact insertion is not relevant)
-          val index = searchIndex(vector.features, model.topTree.value, model.indexMap)
-          assert(index != -1, s"indices must be non-empty: $vector")
-          index -> vector
-      }.partitionBy(new HashPartitioner(trees.partitions.length))
-  
-      // for each partition, search points within corresponding child tree
-      searchData.zipPartitions(trees) {
-        (childData, trees) =>
-          val tree = trees.next()
-          assert(!trees.hasNext)
-          childData.foreach { case (index, lp) =>
-            tree.insert(LPUtils.toJavaLP(lp))
-          }
-          Iterator(tree)
-      }      
+      new StreamingDistributedKNNModel(model.topTree, newTrees, model.indexMap, model.tau)
   }
 
   /**
@@ -418,10 +415,10 @@ object LPUtils {
 
 object StreamingDistributedKNN {
   
-    trait Action
-    case object INSERT extends Action
-    case object REMOVE extends Action
-    case object NONE extends Action
+  trait Action
+  case object INSERT extends Action
+  case object REMOVE extends Action
+  case object NONE extends Action
   case class TreeLP(point: LabeledPoint, itree: Int, var action: Action)
   
   /**
