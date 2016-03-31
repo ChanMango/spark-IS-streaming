@@ -23,8 +23,8 @@ object InstanceSelection {
     
     neighbors.flatMap{ case (p, neigs) => 
       
-      val lpnorms = new TreeLPNorm(p, new VectorWithNorm(p.point.features)) +:
-        neigs.map(q => new TreeLPNorm(q, new VectorWithNorm(q.point.features)))
+      val lpnorms = new TreeLPNorm(new TreeLP(p.point, p.itree, INSERT), new VectorWithNorm(p.point.features)) +:
+        neigs.map(q => new TreeLPNorm(new TreeLP(q.point, q.itree, REMOVE), new VectorWithNorm(q.point.features)))
         
       val graph = Array.fill[Boolean](lpnorms.length, lpnorms.length)(true)
       
@@ -66,21 +66,21 @@ object InstanceSelection {
       }
       
       /* Decide whether to add the new example and to remove old noisy edges */
-      val noisy = (0 until preds.length).map(i => preds(i) != lpnorms(i).point.point.label)
-      p.action = INSERT // Accepted the insertion of new example (first)
-      val toRemove = neigs.zipWithIndex.filter(t => noisy(t._2 + 1)).map{p => p._1.action = REMOVE; p._1} // Remove noisy oldies
-      if(!noisy(0)) p +: toRemove else toRemove      
+      lpnorms.zip(preds)
+        .filter{ case(lp, pred) => (lp.point.point.label != pred && lp.point.action == REMOVE) || (lp.point.point.label == pred && lp.point.action == INSERT)}
+        .map(_._1.point)
     }
-  }  
+  } 
   
   def CNN(neighbors: RDD[(TreeLP, Array[TreeLP])], k: Int, seed: Long) = {
     
     neighbors.flatMap{ case (p, neigs) => 
       
       val lpnorms = new TreeLPNorm(new TreeLP(p.point, p.itree, INSERT), new VectorWithNorm(p.point.features)) +:
-        neigs.map(q => new TreeLPNorm(new TreeLP(q.point, q.itree, REMOVE), new VectorWithNorm(q.point.features)))
+        neigs.map(q => new TreeLPNorm(new TreeLP(q.point, q.itree, INSERT), new VectorWithNorm(q.point.features)))
         
       var S = new ArrayBuffer[Int]
+      var result = new ArrayBuffer[TreeLP]
       val rand = new scala.util.Random(seed)
       
       /*Inserting one element per class*/
@@ -93,6 +93,7 @@ object InstanceSelection {
 		    }        
         if (cont < lpnorms.length) {
 			    S += pos
+			    result += lpnorms(pos).point
 		    }
       }
 
@@ -113,12 +114,13 @@ object InstanceSelection {
   		      if(pred != lpnorms(pos).point.point.label){
   		        continue = true
   		        S += pos
+  		        result += lpnorms(pos).point
   		        S = S.sorted
   		      }
   		    }		      
   		  }
   		} while (continue)
-  		S
+  		result
     }
   } 
   
