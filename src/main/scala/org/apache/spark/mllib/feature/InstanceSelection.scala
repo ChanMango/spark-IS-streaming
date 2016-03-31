@@ -19,6 +19,78 @@ object InstanceSelection {
   
   case class TreeLPNorm(point: TreeLP, norm: VectorWithNorm)
   
+  def localRNGE(neighbors: RDD[(TreeLP, Array[TreeLP])], secondOrder: Boolean = false) = {
+    
+    neighbors.flatMap{ case (p, neigs) => 
+      
+      val lpnorms = new TreeLPNorm(new TreeLP(p.point, p.itree, INSERT), new VectorWithNorm(p.point.features)) +:
+        neigs.map(q => new TreeLPNorm(new TreeLP(q.point, q.itree, REMOVE), new VectorWithNorm(q.point.features)))
+        
+      val graph = Array.fill[Boolean](lpnorms.length, lpnorms.length)(true)
+      
+      /* Compute the relative neighbor graph for edition (RNG-E) */
+      for(i <- 0 until lpnorms.length) {
+        for(j <- 0 until lpnorms.length) {
+          val dij = lpnorms(i).norm.fastDistance(lpnorms(j).norm)
+          for(k <- 0 until lpnorms.length if k != i && k != j) {
+            if(dij > math.max(lpnorms(i).norm.fastDistance(lpnorms(k).norm), lpnorms(j).norm.fastDistance(lpnorms(k).norm)))
+              graph(i)(j) = false
+          }
+        } 
+      }
+      
+      /* Voting process. We only check those elements related to the current insertion */
+      val elementsToBeVoted = 0 +: (1 until lpnorms.length).filter(j => graph(j)(0))
+      var votes = for(i <- 0 until lpnorms.length) yield HashMap[Double, Int]()
+      for(i <- elementsToBeVoted){
+        for(j <- 0 until lpnorms.length){
+          val jlabel = lpnorms(j).point.point.label
+          if(graph(i)(j) && i != j) 
+            votes(i) += jlabel -> (votes(i).getOrElse(jlabel, 0) + 1)
+        }
+      }
+      var preds = votes.map{ hm =>
+        if(hm.isEmpty) None else Option(hm.maxBy(_._2)._1)
+      }
+      
+      if(secondOrder) {        
+        /* 2nd order voting */
+        for(i <- elementsToBeVoted if preds(i) != lpnorms(i).point.point.label){
+          val ilabel = lpnorms(i).point.point.label
+          for(j <- 0 until lpnorms.length){
+            if(graph(i)(j) && i != j && ilabel == lpnorms(j).point.point.label){
+              val jlabel = lpnorms(j).point.point.label
+              for(k <- 0 until lpnorms.length if graph(j)(k))
+                votes(i) += jlabel -> (votes(i).getOrElse(jlabel, 0) + 1)
+            }
+          }
+        }
+      }
+      
+      /* Decide whether to add the new example and to remove old noisy edges */
+      lpnorms.zip(votes).filter{ case(lp, votes) => 
+          if(votes.isEmpty){
+            false
+          } else {
+            val first = votes.head
+            val isEven = votes.filter{case (i, votes) => votes == first._2 }.size == votes.size
+            if(!isEven) {
+              val pred = votes.maxBy(_._2)._1
+              if(lp.point.action == REMOVE) {
+                lp.point.point.label != pred
+              } else if (lp.point.action == INSERT) {
+                lp.point.point.label == pred
+              } else {
+                false
+              }
+            } else {
+              false
+            }            
+          }
+        }.map(_._1.point)
+    }
+  } 
+  
   def RNGE(neighbors: RDD[(TreeLP, Array[TreeLP])], secondOrder: Boolean = false) = {
     
     neighbors.flatMap{ case (p, neigs) => 

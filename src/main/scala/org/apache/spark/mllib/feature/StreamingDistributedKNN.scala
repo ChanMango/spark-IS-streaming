@@ -23,8 +23,7 @@ import scala.collection.mutable.Queue
 import collection.JavaConversions._
 import breeze.linalg.{DenseVector => BDV, Vector => BV}
 import breeze.stats._
-
-import org.apache.spark.mllib.rdd.MLPairRDDFunctions._ 
+import org.apache.spark.mllib.rdd.MLPairRDDFunctions._
 import org.apache.spark.SparkContext._
 import org.apache.spark.Logging
 import org.apache.spark.annotation.Since
@@ -45,6 +44,7 @@ import org.apache.spark.HashPartitioner
 import org.apache.spark.mllib.knn._
 import mtree.DataLP
 import org.apache.spark.mllib.feature.StreamingDistributedKNN._
+import org.apache.spark.util.BoundedPriorityQueue
 
 /**
  * StreamingKNNModel extends MLlib's KMeansModel for streaming
@@ -85,9 +85,21 @@ class StreamingDistributedKNNModel (
     val indexMap: Map[Vector, Int],
     var tau: Double) extends Serializable with Logging {
   
+  private def topByKey(toOrder: RDD[(Long, (DataLP, Double, Int))], num: Int)
+    (implicit ord: Ordering[(DataLP, Double, Int)]) = {
+    toOrder.aggregateByKey(new BoundedPriorityQueue[(DataLP, Double, Int)](num)(ord))(
+      seqOp = (queue, item) => {
+        queue += item
+      },
+      combOp = (queue1, queue2) => {
+        queue1 ++= queue2
+      }
+    ).mapValues(_.toArray.sorted(ord.reverse))  // This is an min-heap, so we reverse the order.
+  }
+  
   def kNNQuery(data: RDD[LabeledPoint], k: Int): RDD[(TreeLP, Array[TreeLP])] = {
     if(topTree != null) {
-      val indexedData = data.zipWithIndex.map(_.swap).partitionBy(new HashPartitioner(trees.partitions.length)).cache
+      val indexedData = data.zipWithIndex.map(_.swap).cache
       val searchData = indexedData.flatMap { case (idx, vector) =>
           val indices = searchIndices(vector.features, topTree.value, indexMap, tau)
             .map(i => (i, (vector, idx)))
@@ -104,20 +116,18 @@ class StreamingDistributedKNNModel (
           childData.flatMap {
             case (ipart, (point, idx)) =>
               tree.kNNQuery(k, point.features.toArray.map(_.toFloat))
-                .map(pair => (idx, (pair.data, pair.distance, ipart)))
+                .map(pair => (idx, (pair.data.asInstanceOf[DataLP], pair.distance, ipart)))
           }
       }
-  
+      
       // merge results by point index together and keep topK results
-      val neigs = results.topByKey(k)(Ordering.by(-_._2)).flatMap { case (lidx, iter) => 
-        iter.map{ case(neigh, _, idx) => 
-          lidx -> new TreeLP(LPUtils.fromJavaLP(neigh.asInstanceOf[DataLP]), idx, NONE)}
+      val neigs = topByKey(results, k)(Ordering.by(-_._2)).map { case (lidx, iter) => 
+        lidx -> iter.map{ case(neigh, _, idx) => new TreeLP(LPUtils.fromJavaLP(neigh.asInstanceOf[DataLP]), idx, NONE)}
       }
       
-      indexedData.cogroup(neigs).values.map{ case(it1, it2) =>
-        val only = it1.toArray
-        val elemtn = new TreeLP(only(0), searchIndex(only(0).features, topTree.value, indexMap), NONE)
-        elemtn -> it2.toArray
+      indexedData.join(neigs).values.map{ case(lp, neigs) =>
+        val tlp = new TreeLP(lp, searchIndex(lp.features, topTree.value, indexMap), NONE)
+        tlp -> neigs
       }
       /*results.groupByKey().map { case (point, iter) =>
         val neigh = iter.toArray.sortBy(-_._2).take(k).map{ case(neigh, _, idx) => new TreeLP(LPUtils.fromJavaLP(neigh.asInstanceOf[DataLP]), idx, NONE)}
@@ -169,6 +179,7 @@ class StreamingDistributedKNN (
   def this() = this(10, 2, -1, (100 to 1000 by 100).toArray, 26827651492L)
   
   private val DEFAULT_SIZE_ESTIMATION = 100000
+  private val DEFAULT_NUMBER_SAMPLES = 10
 
   protected var model: StreamingDistributedKNNModel = new StreamingDistributedKNNModel(null, null, null, 0.0)
 
@@ -289,8 +300,27 @@ class StreamingDistributedKNN (
   
   private def initializeModel(rdd: RDD[LabeledPoint]) = {
       // Initialize topTree (first registers coming...)
-      val rand = new XORShiftRandom(this.seed)
-      val firstLoad = rdd.takeSample(false, this.nPartitions, rand.nextLong())
+      val rand = new XORShiftRandom(this.seed + 2)
+      val samples = rdd.takeSample(false, this.nPartitions * DEFAULT_NUMBER_SAMPLES, rand.nextLong())
+      val comb = samples.grouped(this.nPartitions).toArray
+      val bestc = comb.zipWithIndex.map { case (a, idx) =>
+        var min = Double.PositiveInfinity
+        for(i <- 0 until a.length) {
+          val ne1 = new VectorWithNorm(a(i).features)
+          for(j <- 0 until a.length if i != j) {
+            val dist = new VectorWithNorm(a(j).features).fastDistance(ne1)
+            if(dist < min){
+              min = dist  
+            }            
+          }
+        }
+        idx -> min
+        /*idx -> a.map{e1 => 
+          val ne1 = new VectorWithNorm(e1.features)
+          a.map(e2 => new VectorWithNorm(e2.features).fastDistance(ne1)).sum
+        }.sum*/
+      }.maxBy(_._2)._1
+      val firstLoad = comb(bestc)
       val indexMap = firstLoad.map(_.features).zipWithIndex.toMap
       val bTopTree = rdd.context.broadcast(new MTreeWrapper(firstLoad.map(lp => LPUtils.toJavaLP(lp))))
       
@@ -314,7 +344,7 @@ class StreamingDistributedKNN (
   
   private def RNGedition(rdd: RDD[LabeledPoint]): StreamingDistributedKNNModel = {
       val localGraph = model.kNNQuery(rdd, kGraph)
-      val edited = InstanceSelection.RNGE(localGraph)
+      val edited = InstanceSelection.localRNGE(localGraph, secondOrder = false)
       val newTrees = editTrees(edited, model.trees).persist(StorageLevel.MEMORY_AND_DISK)          
       new StreamingDistributedKNNModel(model.topTree, newTrees, model.indexMap, model.tau)
   }
