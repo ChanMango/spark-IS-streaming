@@ -344,7 +344,7 @@ class StreamingDistributedKNN (
   
   private def RNGedition(rdd: RDD[LabeledPoint]): StreamingDistributedKNNModel = {
       val localGraph = model.kNNQuery(rdd, kGraph)
-      val edited = InstanceSelection.localRNGE(localGraph, secondOrder = false)
+      val edited = InstanceSelection.instanceSelection(localGraph)
       val newTrees = editTrees(edited, model.trees).persist(StorageLevel.MEMORY_AND_DISK)          
       new StreamingDistributedKNNModel(model.topTree, newTrees, model.indexMap, model.tau)
   }
