@@ -449,7 +449,7 @@ object StreamingDistributedKNN {
   case object INSERT extends Action
   case object REMOVE extends Action
   case object NONE extends Action
-  case class TreeLP(point: LabeledPoint, itree: Int, var action: Action)
+  case class TreeLP(point: LabeledPoint, itree: Int, action: Action)
   
   /**
     * Estimate a suitable buffer size based on dataset

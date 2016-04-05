@@ -194,7 +194,12 @@ public class MTreeWrapper extends MTree<DataLP> implements Serializable {
 	
 	public boolean remove(DataLP point) {
 		if(elements.remove(point)) {
-			super.remove(point);
+			if(super.remove(point)){
+				leafCount --;
+				return true;
+			} else {
+				return false;
+			}
 		}		
 		return false;
 	}

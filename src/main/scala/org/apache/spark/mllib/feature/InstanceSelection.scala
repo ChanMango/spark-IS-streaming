@@ -17,21 +17,19 @@ import org.apache.spark.mllib.feature.StreamingDistributedKNN._
 
 object InstanceSelection {
   
-  case class TreeLPNorm(point: TreeLP, norm: VectorWithNorm, var distances: Array[Float])
+  case class TreeLPNorm(point: TreeLP, norm: VectorWithNorm, distances: Array[Float])
   
   private def computeDistances(neighbors: RDD[(TreeLP, Array[TreeLP])]) = {
     neighbors.map{ case (p, neigs) => 
-      val elems = new TreeLPNorm(new TreeLP(p.point, p.itree, INSERT), new VectorWithNorm(p.point.features), null) +:
-        neigs.map(q => new TreeLPNorm(new TreeLP(q.point, q.itree, REMOVE), new VectorWithNorm(q.point.features), null))
-      //val distances = Array.fill[Double](elems.length, elems.length)(Double.PositiveInfinity)
-      
+      val elems = new TreeLPNorm(new TreeLP(p.point, p.itree, NONE), new VectorWithNorm(p.point.features), Array.fill[Float](neigs.length + 1)(Float.PositiveInfinity)) +:
+        neigs.map(q => new TreeLPNorm(new TreeLP(q.point, q.itree, NONE), new VectorWithNorm(q.point.features), Array.fill[Float](neigs.length + 1)(Float.PositiveInfinity)))
+        
       /* Compute distances */
-      for(i <- 0 until elems.length) {
+      for(i <- 0 until elems.length) { 
         val dist = new Array[Float](elems.length)
         for(j <- 0 until elems.length if i != j) {
-          dist(j) = elems(i).norm.fastDistance(elems(j).norm).toFloat
-        } 
-        elems(i).distances = dist
+          elems(i).distances(j) = elems(i).norm.fastDistance(elems(j).norm).toFloat
+        }
       }  
       elems
     }    
@@ -39,23 +37,29 @@ object InstanceSelection {
   
   def instanceSelection(elements: RDD[(TreeLP, Array[TreeLP])]) = {
     val processed = computeDistances(elements)
-    val edited = localRNGE(processed).cache
+    val edited = processed.map(elems => localRNGE(elems)).cache
     
+    println("Inserted in RNGE: " + edited.flatMap(x => x).filter(_.point.action == INSERT).count())    
+    println("Removed in RNGE: " + edited.flatMap(x => x).filter(_.point.action == REMOVE).count())
+
     val filtered = edited.map{ neigs =>
-      val nonRemoved = neigs.zipWithIndex.filter{ case (e, i) => e.point.action != REMOVE }
+      val nonRemoved = neigs.zipWithIndex.filter{ case (e, _) => e.point.action != REMOVE }
       nonRemoved.map{ case(flp, _) => 
         val ndist = nonRemoved.map{ case (_, j) => flp.distances(j) } 
-        flp.distances = ndist
-        flp
+        new TreeLPNorm(flp.point, flp.norm, ndist)
       }        
     }    
-    val condensed = local1RNN(filtered).flatMap(y => y).filter(_.point.action != NONE)
+    
+    
+    val condensed = filtered.map(local1RNN).flatMap(y => y).filter(_.point.action != NONE).cache
+    
+    println("Inserted in RNN: " + condensed.filter(_.point.action == INSERT).count())    
+    println("Removed in RNN: " + condensed.filter(_.point.action == REMOVE).count())
+    
     edited.flatMap(y => y).filter(_.point.action == REMOVE).union(condensed).map(_.point)   
   }
   
-  private def localRNGE(neighbors: RDD[Array[TreeLPNorm]], secondOrder: Boolean = false) = {
-    
-    neighbors.map{ lpnorms => 
+  private def localRNGE(lpnorms: Array[TreeLPNorm], secondOrder: Boolean = false) = {
         
       val graph = Array.fill[Boolean](lpnorms.length, lpnorms.length)(true)
       
@@ -98,23 +102,21 @@ object InstanceSelection {
       }
       
       lpnorms.zipWithIndex.map{ case(lp, i) =>
-        val first = votes(i).head
-        val isEven = votes(i).filter{case (i, v) => v == first._2 }.size == votes(i).size
-        if(!isEven) {
-          val pred = votes(i).maxBy(_._2)._1
-          if(i == 0 && lp.point.point.label == pred) {
-            lp.point.action = INSERT
-          } else if (i > 0 && lp.point.point.label != pred) {
-            lp.point.action = REMOVE
-          } else {
-            lp.point.action = NONE
+        var action: Action = if(lp.point.action != null) lp.point.action else NONE
+        if(!votes(i).isEmpty) {
+          val first = votes(i).head
+          val isEven = votes(i).filter{case (i, v) => v == first._2 }.size == votes(i).size
+          if(!isEven || votes(i).size == 1) {
+            val pred = votes(i).maxBy(_._2)._1
+            if(i == 0 && lp.point.point.label == pred) {
+              action = INSERT
+            } else if (i > 0 && lp.point.point.label != pred) {
+              action = REMOVE
+            }
           }
-        } else {
-          lp.point.action = NONE
-        }
-        lp
+        }        
+        new TreeLPNorm(new TreeLP(lp.point.point, lp.point.itree, action), lp.norm, lp.distances)
       }
-    }
   } 
   
   private def CNN(neighbors: RDD[(TreeLP, Array[TreeLP])], k: Int, seed: Long) = {
@@ -169,67 +171,80 @@ object InstanceSelection {
     }
   } 
   
-  private def local1RNN(neighbors: RDD[(Array[TreeLPNorm])]) = {
+  private def local1RNN(lpnorms: (Array[TreeLPNorm])) = {
     
-    neighbors.map{ lpnorms =>       
+      val radius = lpnorms(0).distances.slice(1, lpnorms.length).max
+      val elementsToBeVoted = 0 +: lpnorms(0).distances.zipWithIndex.filter{ case (d, _) => d < radius / 2 }.map(_._2)
+      val S = Array.fill[Boolean](lpnorms.length)(true)
+      val distances = lpnorms.map(_.distances.clone)
       
-      val radius = lpnorms(0).distances.max
-      val elementsToBeVoted = lpnorms(0).distances.zipWithIndex.filter{ case (d, _) => d < radius / 2 }.map(_._2)
-      val redundant = Array.fill[Boolean](lpnorms.length)(false)
+      val computeAcc = (i: Int) => {
+        val j = distances(i).zipWithIndex.minBy(_._1)._2  
+        if(lpnorms(i).point.point.label == lpnorms(j).point.point.label) 1 else 0
+      }
+      val iAcc = (0 until lpnorms.length).map(computeAcc).sum      
+      
+      for(i <- elementsToBeVoted) { // Only the instances inside the circle with radius = max /2 are considered
+        for(j <- 0 until lpnorms.length){ // Create a new set w/o this element
+           distances(j)(i) = Float.PositiveInfinity
+        }
+        val nAcc = (0 until lpnorms.length).map(computeAcc).sum
+        if(nAcc >= iAcc) { // Remove element, it's redundant
+          S(i) = false
+        } else {
+          for(j <- 0 until lpnorms.length){ // Recover this element from the original matrix
+            distances(j)(i) = lpnorms(i).distances(j)
+          }
+        }
+      }
       
       /* Voting process */
-      for(i <- elementsToBeVoted) {
+      /*for(i <- elementsToBeVoted) {
         val ilabel = lpnorms(i).point.point.label
-        redundant(i) = true
         var j = 0; var finish = false
+        var loses = 0; var wins = 0
         while(j < lpnorms.length && !finish) {
           val inddist = lpnorms(j).distances.zipWithIndex
           val closest = inddist.minBy(_._1)
           if(closest._1 < Float.PositiveInfinity) {
-              if(closest._2 == i) {
-                // i was its 1-NN
-                if(lpnorms(closest._2).point.point.label != ilabel) {
-                // but it is classified incorrectly
-                redundant(i) = false
-                finish = true       
-              } else {
-                inddist(closest._2) = Float.PositiveInfinity -> closest._2 
-                // Find the new 1-NN for this element
-                val nclosest = inddist.minBy(_._1)
-                if(nclosest._1 < Float.PositiveInfinity) {
-                  if(lpnorms(nclosest._2).point.point.label != ilabel) { 
-                    // If i is incorrectly classified by its new 1-NN
-                    redundant(i) = false
-                    finish = true
-                  }
-                } else {
-                  finish = true
+            if(closest._2 == i) {
+              inddist(closest._2) = Float.PositiveInfinity -> closest._2 
+              // Find the new 1-NN for this element
+              val nclosest = inddist.minBy(_._1)
+              if(nclosest._1 < Float.PositiveInfinity) {
+                if(lpnorms(closest._2).point.point.label == ilabel && lpnorms(nclosest._2).point.point.label != ilabel) { 
+                  // Misclassified
+                  loses += 1
+                } else if (lpnorms(closest._2).point.point.label != ilabel && lpnorms(nclosest._2).point.point.label == ilabel) {
+                  // Correctly classified
+                  wins += 1
                 }
+              } else {
+                finish = true
               }
-            }            
+            }          
           } else {
             finish = true
           }          
           j += 1
         }
         // Update references to the instance already removed
-        if(redundant(i)) {
+        if(wins < loses) {
+          S(i) = false
           for (z <- 0 until lpnorms.length) lpnorms(z).distances(i) = Float.PositiveInfinity 
         }
-      }
+      }*/
       
       /* Final result */
       lpnorms.zipWithIndex.map{ case (lpn, i) => 
-        if(i == 0 && !redundant(i)) {
-          lpn.point.action = INSERT
-        } else if (i > 0 && redundant(i)) {
-          lpn.point.action = REMOVE
-        } else {
-          lpn.point.action = NONE
+        var action: Action = if(lpn.point.action != null) lpn.point.action else NONE
+        if(i == 0 && S(i)) {
+          action = INSERT
+        } else if (i > 0 && !S(i)) {
+          action = REMOVE
         }
-        lpn        
+        new TreeLPNorm(new TreeLP(lpn.point.point, lpn.point.itree, action), lpn.norm, lpn.distances)        
       }
-    }
   } 
   
 }
