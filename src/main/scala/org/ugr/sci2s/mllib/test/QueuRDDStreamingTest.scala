@@ -4,8 +4,8 @@ package org.ugr.sci2s.mllib.test
 import org.apache.spark._
 import org.apache.spark.streaming._
 import org.apache.spark.mllib.regression.LabeledPoint
-import org.apache.spark.mllib.feature._
-import org.apache.spark.annotation.Since
+import org.apache.spark.mllib.feature.StreamingDistributedKNN
+import org.apache.spark.mllib.feature.StreamingDistributedKNN._
 
 object QueuRDDStreamingTest {
 
@@ -28,19 +28,19 @@ object QueuRDDStreamingTest {
         }
     }).toMap  
     
-    val input = params.getOrElse("input", "tmp")    
+    val input = params.getOrElse("input", "/home/sramirez/datasets/poker-5-fold/streaming/poker-10K.dat")    
     val k = params.getOrElse("k", "1").toInt
-    val rate = params.getOrElse("rate", "5000").toInt
-    val seed = params.getOrElse("seed", "237597430L").toLong
+    val rate = params.getOrElse("rate", "2500").toInt
+    val seed = params.getOrElse("seed", "237597430").toLong
     
     val inputRDD = sc.textFile(input).map(LabeledPoint.parse).cache
     val size = inputRDD.count()
-    val chunkSize = rate.toFloat / size
-    val nchunks = math.ceil(size * chunkSize).toInt
+    val chunkPerc = rate.toFloat / size
+    val nchunks = math.ceil(1 / chunkPerc).toInt
     println("Number of chunks: " + nchunks)
-    println("Size of chunks: " + chunkSize)
+    println("Size of chunks: " + chunkPerc)
     
-    val arrayRDD = inputRDD.randomSplit(Array.fill[Double](nchunks)(chunkSize), seed)
+    val arrayRDD = inputRDD.randomSplit(Array.fill[Double](nchunks)(chunkPerc), seed)
     val trainingData = ssc.queueStream(scala.collection.mutable.Queue(arrayRDD: _*), oneAtATime = true)
     
     val model = new StreamingDistributedKNN().setNPartitions(4)
@@ -49,7 +49,7 @@ object QueuRDDStreamingTest {
         .reduce{ case (t1, t2) => (t1._1 + t2._1, t1._2 + t2._2) }
         .map{ case (wins, sum) => wins / sum.toFloat}
         .print
-    model.trainOn(trainingData)
+    model.trainOn(trainingData, edition = true)
     
 
     ssc.start()

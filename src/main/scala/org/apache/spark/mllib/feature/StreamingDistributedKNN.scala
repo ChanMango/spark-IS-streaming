@@ -129,11 +129,6 @@ class StreamingDistributedKNNModel (
         val tlp = new TreeLP(lp, searchIndex(lp.features, topTree.value, indexMap), null)
         tlp -> neigs
       }
-      /*results.groupByKey().map { case (point, iter) =>
-        val neigh = iter.toArray.sortBy(-_._2).take(k).map{ case(neigh, _, idx) => new TreeLP(LPUtils.fromJavaLP(neigh.asInstanceOf[DataLP]), idx, NONE)}
-        val treep = new TreeLP(point, searchIndex(point.features, topTree.value, indexMap), NONE)
-        treep -> neigh
-      }*/
     } else {
       data.context.emptyRDD[(TreeLP, Array[TreeLP])]
     }
@@ -232,7 +227,7 @@ class StreamingDistributedKNN (
    *
    * @param data DStream containing vector data
    */
-  def trainOn(data: DStream[LabeledPoint]) {
+  def trainOn(data: DStream[LabeledPoint], edition: Boolean = true) {
     val sc = data.context.sparkContext
     val queue = new Queue[LabeledPoint]
     var nelem = 0L
@@ -270,7 +265,7 @@ class StreamingDistributedKNN (
         if (csize > 0){
           // Swap model
           val oldModel = model
-          model = RNGedition(rdd)
+          model = if(edition) RNGedition(rdd) else insertNewExamples(rdd)
           logInfo("Number of instances in the case-base: " + model.trees.map(_.getSize).sum)
           oldModel.trees.unpersist()          
           
@@ -315,10 +310,6 @@ class StreamingDistributedKNN (
           }
         }
         idx -> min
-        /*idx -> a.map{e1 => 
-          val ne1 = new VectorWithNorm(e1.features)
-          a.map(e2 => new VectorWithNorm(e2.features).fastDistance(ne1)).sum
-        }.sum*/
       }.maxBy(_._2)._1
       val firstLoad = comb(bestc)
       val indexMap = firstLoad.map(_.features).zipWithIndex.toMap
