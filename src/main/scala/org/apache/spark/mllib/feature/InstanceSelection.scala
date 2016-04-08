@@ -21,8 +21,8 @@ object InstanceSelection {
   
   private def computeDistances(neighbors: RDD[(TreeLP, Array[TreeLP])]) = {
     neighbors.map{ case (p, neigs) => 
-      val elems = new TreeLPNorm(new TreeLP(p.point, p.itree, NONE), new VectorWithNorm(p.point.features), Array.fill[Float](neigs.length + 1)(Float.PositiveInfinity)) +:
-        neigs.map(q => new TreeLPNorm(new TreeLP(q.point, q.itree, NONE), new VectorWithNorm(q.point.features), Array.fill[Float](neigs.length + 1)(Float.PositiveInfinity)))
+      val elems = new TreeLPNorm(new TreeLP(p.point, p.itree, NOINSERT), new VectorWithNorm(p.point.features), Array.fill[Float](neigs.length + 1)(Float.PositiveInfinity)) +:
+        neigs.map(q => new TreeLPNorm(new TreeLP(q.point, q.itree, NOREMOVE), new VectorWithNorm(q.point.features), Array.fill[Float](neigs.length + 1)(Float.PositiveInfinity)))
         
       /* Compute distances */
       for(i <- 0 until elems.length) { 
@@ -44,20 +44,21 @@ object InstanceSelection {
 
     // Filter those groups where the main element is marked as not to be inserted
     // Then filter those neighbors marked to be removed
-    val filtered = edited.filter(l => l(0).point.action != NONE).map{ neigs =>
+    /*val filtered = edited.filter(l => l(0).point.action != NONE).map{ neigs =>
       val nonRemoved = neigs.zipWithIndex.filter{ case (e, _) => e.point.action != REMOVE }
       nonRemoved.map{ case(flp, _) => 
         val ndist = nonRemoved.map{ case (_, j) => flp.distances(j) } 
         new TreeLPNorm(flp.point, flp.norm, ndist)
       }        
-    }        
+    } */       
     
-    val condensed = filtered.map(local1RNN).flatMap(y => y).filter(_.point.action != NONE).cache
+    val condensed = edited.map(local1RNN2).flatMap(y => y).filter(p => p.point.action != NOINSERT && p.point.action != NOREMOVE).cache
     
     println("Inserted in RNN: " + condensed.filter(_.point.action == INSERT).count())    
     println("Removed in RNN: " + condensed.filter(_.point.action == REMOVE).count())
     
-    edited.flatMap(y => y).filter(_.point.action == REMOVE).union(condensed).map(_.point)   
+    //edited.flatMap(y => y).filter(_.point.action == REMOVE).union(condensed).map(_.point)   
+    condensed.map(_.point)
   }
   
   private def localRNGE(lpnorms: Array[TreeLPNorm], removeOldies: Boolean = false, secondOrder: Boolean = false) = {
@@ -103,7 +104,7 @@ object InstanceSelection {
       }
       
       lpnorms.zipWithIndex.map{ case(lp, i) =>
-        var action: Action = if(lp.point.action != null) lp.point.action else NONE
+        var action: Action = lp.point.action
         if(!votes(i).isEmpty) { // Elements to be voted
           val first = votes(i).head
           //val isEven = votes(i).filter{case (i, v) => v == first._2 }.size == votes(i).size
@@ -152,9 +153,80 @@ object InstanceSelection {
       
       /* Final result */
       lpnorms.zipWithIndex.map { case (lpn, i) => 
-        var action: Action = if(lpn.point.action != null) lpn.point.action else NONE
-        if (i > 0 && !S(i)) {
-          action = REMOVE
+        var action: Action = lpn.point.action
+        if (!S(i)) {
+          if(action == NOREMOVE){
+            action = REMOVE
+          }
+        } else {
+          if(action == NOINSERT) action = INSERT
+        }
+        new TreeLPNorm(new TreeLP(lpn.point.point, lpn.point.itree, action), lpn.norm, lpn.distances)        
+      }
+  } 
+  
+  private def local1RNN2(lpnorms: (Array[TreeLPNorm])) = {
+    
+      println("Removed from RNGE: " + lpnorms.filter(_.point.action == REMOVE).length)
+      val S = Array.fill[Boolean](lpnorms.length)(true)
+      val radius = lpnorms(0).distances.slice(1, lpnorms.length).max 
+      
+      println("radius: " + radius)
+      // Selection matrix based on distances (only initialized with the non-removed elements)
+      val distances = lpnorms.map(_.distances.clone)      
+      var elementsToBeVoted = Array.fill[Boolean](lpnorms.length)(true)  
+      (0 until lpnorms.length).foreach{ i =>
+        if(lpnorms(i).point.action == REMOVE || lpnorms(i).point.action == NOINSERT) {
+          elementsToBeVoted(i) = false
+          (0 until lpnorms.length).foreach{ j => distances(i)(j) = Float.PositiveInfinity } 
+        }
+        
+      }
+      println("Elementsi to be voted: " + elementsToBeVoted.mkString(","))
+      val updateVotes = () => {(0 until lpnorms.length).foreach{ i =>
+        val lpn = lpnorms(i)
+        if(elementsToBeVoted(i) && i > 0 && distances(i).min < radius - lpn.distances(0)){
+          elementsToBeVoted(i) = false
+          (0 until lpnorms.length).foreach{ j =>  distances(j)(i) = Float.PositiveInfinity } 
+        }          
+      }}
+      
+      updateVotes()
+      
+      val computeAcc = (i: Int) => {
+        val j = distances(i).zipWithIndex.minBy(_._1)._2  
+        if(lpnorms(i).point.point.label == lpnorms(j).point.point.label) 1 else 0
+      }
+      val iAcc = (0 until lpnorms.length).map(computeAcc).sum      
+      
+      val valid = (i: Int) => {elementsToBeVoted(i) && distances(i).filter(_ != Float.PositiveInfinity).length > 2}
+      //println("Elements to be voted: " + elementsToBeVoted.mkString(","))
+      for(i <- 0 until lpnorms.length if valid(i)) { 
+        // Only the instances inside the circle with radius = max / 2 are considered
+        for(j <- 0 until lpnorms.length){ // Create a new set w/o this element
+           distances(j)(i) = Float.PositiveInfinity
+        }
+        val nAcc = (0 until lpnorms.length).map(computeAcc).sum
+        if(nAcc >= iAcc) { // Remove element, it's redundant
+          S(i) = false
+          updateVotes()
+        } else {
+          for(j <- 0 until lpnorms.length){ // Recover this element from the original matrix
+            distances(j)(i) = lpnorms(j).distances(i)
+          }
+        }
+      }
+      
+      println("Result: " + S.mkString(","))
+      /* Final result */
+      lpnorms.zipWithIndex.map { case (lpn, i) => 
+        var action: Action = lpn.point.action
+        if (!S(i)) {
+          if(action == NOREMOVE){
+            action = REMOVE
+          }  else if(action == INSERT) {
+            action = NOINSERT
+          }
         }
         new TreeLPNorm(new TreeLP(lpn.point.point, lpn.point.itree, action), lpn.norm, lpn.distances)        
       }
