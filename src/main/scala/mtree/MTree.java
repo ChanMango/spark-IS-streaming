@@ -675,11 +675,11 @@ public class MTree<DATA> {
 	
 	
 	
-	private abstract class NodeTrait {
+	protected abstract class NodeTrait {
 		protected Node thisNode;
 	}
 	
-	private interface Leafness<DATA> {
+	protected interface Leafness<DATA> {
 		void doAddData(DATA data, double distance);
 		void addChild(MTree<DATA>.IndexItem child, double distance);
 		void doRemoveData(DATA data, double distance) throws DataNotFound;
@@ -687,7 +687,7 @@ public class MTree<DATA> {
 		void _checkChildClass(MTree<DATA>.IndexItem child);
 	}
 	
-	private interface Rootness {
+	protected interface Rootness {
 		int getMinCapacity();
 		void _checkDistanceToParent();
 		void _checkMinCapacity();

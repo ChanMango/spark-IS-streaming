@@ -45,6 +45,7 @@ import org.apache.spark.mllib.knn._
 import mtree.DataLP
 import org.apache.spark.mllib.feature.StreamingDistributedKNN._
 import org.apache.spark.util.BoundedPriorityQueue
+import mtree.IndexedLP
 
 /**
  * StreamingKNNModel extends MLlib's KMeansModel for streaming
@@ -82,7 +83,6 @@ import org.apache.spark.util.BoundedPriorityQueue
 class StreamingDistributedKNNModel (
     val topTree: Broadcast[MTreeWrapper],
     val trees: RDD[MTreeWrapper],
-    val indexMap: Map[Vector, Int],
     var tau: Double) extends Serializable with Logging {
   
   private def topByKey(toOrder: RDD[(Long, (DataLP, Double, Int))], num: Int)
@@ -101,7 +101,7 @@ class StreamingDistributedKNNModel (
     if(topTree != null) {
       val indexedData = data.zipWithIndex.map(_.swap).cache
       val searchData = indexedData.flatMap { case (idx, vector) =>
-          val indices = searchIndices(vector.features, topTree.value, indexMap, tau)
+          val indices = searchIndices(vector.features, topTree.value, tau)
             .map(i => (i, (vector, idx)))
 
           assert(indices.filter(_._1 == -1).length == 0, s"indices must be non-empty: $vector")
@@ -126,7 +126,7 @@ class StreamingDistributedKNNModel (
       }
       
       indexedData.join(neigs).values.map{ case(lp, neigs) =>
-        val tlp = new TreeLP(lp, searchIndex(lp.features, topTree.value, indexMap), null)
+        val tlp = new TreeLP(lp, searchIndex(lp.features, topTree.value), null)
         tlp -> neigs
       }
     } else {
@@ -176,7 +176,7 @@ class StreamingDistributedKNN (
   private val DEFAULT_SIZE_ESTIMATION = 100000
   private val DEFAULT_NUMBER_SAMPLES = 10
 
-  protected var model: StreamingDistributedKNNModel = new StreamingDistributedKNNModel(null, null, null, 0.0)
+  protected var model: StreamingDistributedKNNModel = new StreamingDistributedKNNModel(null, null, 0.0)
 
   /**
    * Set the number of partitions/sub-trees to use in the model.
@@ -312,8 +312,8 @@ class StreamingDistributedKNN (
         idx -> min
       }.maxBy(_._2)._1
       val firstLoad = comb(bestc)
-      val indexMap = firstLoad.map(_.features).zipWithIndex.toMap
-      val bTopTree = rdd.context.broadcast(new MTreeWrapper(firstLoad.map(lp => LPUtils.toJavaLP(lp))))
+      //val indexMap = firstLoad.map(_.features).zipWithIndex.toMap
+      val bTopTree = rdd.context.broadcast(new MTreeWrapper(firstLoad.zipWithIndex.map(lp => LPUtils.toIndexedJavaLP(lp._1, lp._2))))
       
       val tau = if(overlapDistance < 0) {
         estimateTau(rdd.map(lp => 
@@ -324,20 +324,20 @@ class StreamingDistributedKNN (
       logInfo("Tau is: " + tau)
       
       // Load the instances in the sub-trees
-      val repartitioned = rdd.map(v => (v, null)).partitionBy(new KNNPartitioner(bTopTree, indexMap))
+      val repartitioned = rdd.map(v => (v, null)).partitionBy(new KNNPartitioner(bTopTree))
       val trees = repartitioned.mapPartitions { itr =>
         val childTree = new MTreeWrapper(itr.map(t => LPUtils.toJavaLP(t._1)).toArray)
         Iterator(childTree)
       }.persist(StorageLevel.MEMORY_AND_DISK)
         
-      new StreamingDistributedKNNModel(bTopTree, trees, indexMap, tau)
+      new StreamingDistributedKNNModel(bTopTree, trees, tau)
   }
   
   private def RNGedition(rdd: RDD[LabeledPoint]): StreamingDistributedKNNModel = {
       val localGraph = model.kNNQuery(rdd, kGraph)
       val edited = InstanceSelection.instanceSelection(localGraph)
       val newTrees = editTrees(edited, model.trees).persist(StorageLevel.MEMORY_AND_DISK)          
-      new StreamingDistributedKNNModel(model.topTree, newTrees, model.indexMap, model.tau)
+      new StreamingDistributedKNNModel(model.topTree, newTrees, model.tau)
   }
   
   private def editTrees(rdd: RDD[TreeLP], trees: RDD[MTreeWrapper]) = {
@@ -373,7 +373,7 @@ class StreamingDistributedKNN (
       // Add new examples to the casebase
       val searchData = rdd.map { vector =>
           // Just use one index for insertion (exact insertion is not relevant)
-          val index = StreamingDistributedKNN.searchIndex(vector.features, model.topTree.value, model.indexMap)
+          val index = StreamingDistributedKNN.searchIndex(vector.features, model.topTree.value)
           assert(index != -1, s"indices must be non-empty: $vector")
           index -> vector
       }.partitionBy(new HashPartitioner(model.trees.partitions.length))
@@ -389,7 +389,7 @@ class StreamingDistributedKNN (
           Iterator(tree)
       }.persist(StorageLevel.MEMORY_AND_DISK)
         
-      new StreamingDistributedKNNModel(model.topTree, newTrees, model.indexMap, model.tau)
+      new StreamingDistributedKNNModel(model.topTree, newTrees, model.tau)
   }
 
   /**
@@ -427,6 +427,10 @@ class StreamingDistributedKNN (
 object LPUtils {
   def toJavaLP(lp: LabeledPoint) = {
     new DataLP(lp.features.toArray.map(_.toFloat), lp.label.toFloat)
+  }
+  
+  def toIndexedJavaLP(lp: LabeledPoint, index: Int) = {
+    new IndexedLP(lp.features.toArray.map(_.toFloat), lp.label.toFloat, index)
   }
   
   def fromJavaLP(jlp: DataLP) = {
@@ -510,14 +514,14 @@ object StreamingDistributedKNN {
   }
 
   
-  def searchIndex(v: Vector, tree: MTreeWrapper, index: Map[Vector, Int]): Int = {
-    val jlp: DataLP = tree.kNNQuery(1, LPUtils.toJavaLP(new LabeledPoint(0, v)).getFeatures).get(0).data.asInstanceOf[DataLP]        
-    index.getOrElse(LPUtils.fromJavaLP(jlp).features, -1)
+  def searchIndex(v: Vector, tree: MTreeWrapper): Int = {
+    val neigs = tree.kNNQuery(1, LPUtils.toJavaLP(new LabeledPoint(0, v)).getFeatures)
+    if(neigs.isEmpty()) -1 else neigs.get(0).data.asInstanceOf[IndexedLP].getIndex
   }
   
-  def searchIndices(v: Vector, tree: MTreeWrapper, index: Map[Vector, Int], tau: Double): Seq[Int] = {
-    val jlps = tree.searchIndices(LPUtils.toJavaLP(new LabeledPoint(0, v)).getFeatures, tau).map(_.data.asInstanceOf[DataLP])
-    jlps.map(jlp => index.getOrElse(LPUtils.fromJavaLP(jlp).features, -1)).toSeq
+  def searchIndices(v: Vector, tree: MTreeWrapper, tau: Double): Seq[Int] = {
+    val neigs =  tree.searchIndices(LPUtils.toJavaLP(new LabeledPoint(0, v)).getFeatures, tau)
+    if(neigs.isEmpty()) Seq(-1) else neigs.map(_.data.asInstanceOf[IndexedLP].getIndex).toSeq
   }
 }
 
@@ -526,12 +530,12 @@ object StreamingDistributedKNN {
 *
 * @param tree [[MetricTree]] used to find leaf
 */
-class KNNPartitioner(treeIndex: Broadcast[MTreeWrapper], indexMap: Map[Vector, Int]) extends Partitioner {
-  override def numPartitions: Int = indexMap.size
+class KNNPartitioner(treeIndex: Broadcast[MTreeWrapper]) extends Partitioner {
+  override def numPartitions: Int = treeIndex.value.getSize
 
   override def getPartition(key: Any): Int = {
     key match {
-      case v: LabeledPoint => StreamingDistributedKNN.searchIndex(v.features, treeIndex.value, indexMap)
+      case v: LabeledPoint => StreamingDistributedKNN.searchIndex(v.features, treeIndex.value)
       case _ => throw new IllegalArgumentException(s"Key must be of type LabeledPoint but got: $key")
     }
   }
