@@ -14,7 +14,7 @@ object QueuRDDStreamingTest {
     // Create a local StreamingContext with two working thread and batch interval of 1 second.
     // The master requires 2 cores to prevent from a starvation scenario.
 
-    val conf = new SparkConf().setAppName("MLStreamingTest")
+    val conf = new SparkConf().setMaster("local[4]").setAppName("MLStreamingTest")
     val ssc = new StreamingContext(conf, Seconds(2))
     val sc = ssc.sparkContext
     
@@ -37,7 +37,8 @@ object QueuRDDStreamingTest {
     val k = params.getOrElse("k", "1").toInt
     val rate = params.getOrElse("rate", "2500").toInt
     val seed = params.getOrElse("seed", "237597430").toLong
-    val ntrees = params.getOrElse("ntress", "4").toInt
+    val ntrees = params.getOrElse("ntrees", "4").toInt
+    val overlap = params.getOrElse("overlap", "0.0").toDouble
     
     // Read file
     val typeConversion = KeelParser.parseHeaderFile(sc, header) 
@@ -56,7 +57,7 @@ object QueuRDDStreamingTest {
     val arrayRDD = inputRDD.randomSplit(Array.fill[Double](nchunks)(chunkPerc), seed)
     val trainingData = ssc.queueStream(scala.collection.mutable.Queue(arrayRDD: _*), oneAtATime = true)
     
-    val model = new StreamingDistributedKNN().setNPartitions(ntrees)
+    val model = new StreamingDistributedKNN().setNPartitions(ntrees).setOverlapDistance(overlap)
     val preds = model.predictOnValues(trainingData, k)
         .map{case (label, pred) => if(label == pred) (1, 1)  else (0, 1)}
         .reduce{ case (t1, t2) => (t1._1 + t2._1, t1._2 + t2._2) }

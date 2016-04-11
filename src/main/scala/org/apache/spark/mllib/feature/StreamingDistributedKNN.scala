@@ -97,41 +97,63 @@ class StreamingDistributedKNNModel (
     ).mapValues(_.toArray.sorted(ord.reverse))  // This is an min-heap, so we reverse the order.
   }
   
-  def kNNQuery(data: RDD[LabeledPoint], k: Int): RDD[(TreeLP, Array[TreeLP])] = {
-    if(topTree != null) {
-      val indexedData = data.zipWithIndex.map(_.swap).cache
-      val searchData = indexedData.flatMap { case (idx, vector) =>
-          val indices = searchIndices(vector.features, topTree.value, tau)
-            .map(i => (i, (vector, idx)))
+  private def accuratekNNQuery(data: RDD[LabeledPoint], k: Int): RDD[(TreeLP, Array[TreeLP])] = {
 
-          assert(indices.filter(_._1 == -1).length == 0, s"indices must be non-empty: $vector")
-          indices
-      }.partitionBy(new HashPartitioner(trees.partitions.length))
+    // Efficient join if elements and their neighbors have the same partitioning scheme
+    val indexedData = data.zipWithIndex.map(_.swap).partitionBy(new HashPartitioner(trees.partitions.length)).cache
+    val searchData = indexedData.flatMap { case (idx, vector) =>
+        val indices = searchIndices(vector.features, topTree.value, tau)
+          .map(i => (i, (vector, idx)))
+        assert(indices.filter(_._1 == -1).length == 0, s"indices must be non-empty: $vector")
+        indices
+    }.partitionBy(new HashPartitioner(trees.partitions.length))
 
-      // for each partition, search points within corresponding child tree
-      val results = searchData.zipPartitions(trees) {
-        (childData, trees) =>
-          val tree = trees.next()
-          assert(!trees.hasNext)
-          childData.flatMap {
-            case (ipart, (point, idx)) =>
-              tree.kNNQuery(k, point.features.toArray.map(_.toFloat))
-                .map(pair => (idx, (pair.data.asInstanceOf[DataLP], pair.distance, ipart)))
-          }
-      }
-      
-      // merge results by point index together and keep topK results
-      val neigs = topByKey(results, k)(Ordering.by(-_._2)).map { case (lidx, iter) => 
-        lidx -> iter.map{ case(neigh, _, idx) => new TreeLP(LPUtils.fromJavaLP(neigh.asInstanceOf[DataLP]), idx, null)}
-      }
-      
-      indexedData.join(neigs).values.map{ case(lp, neigs) =>
-        val tlp = new TreeLP(lp, searchIndex(lp.features, topTree.value), null)
-        tlp -> neigs
-      }
-    } else {
-      data.context.emptyRDD[(TreeLP, Array[TreeLP])]
+    // for each partition, search points within corresponding child tree
+    val results = searchData.zipPartitions(trees) {
+      (childData, trees) =>
+        val tree = trees.next()
+        assert(!trees.hasNext)
+        childData.flatMap {
+          case (ipart, (point, idx)) =>
+            tree.kNNQuery(k, point.features.toArray.map(_.toFloat))
+              .map(pair => (idx, (pair.data.asInstanceOf[DataLP], pair.distance, ipart)))
+        }
     }
+    
+    // merge results by point index together and keep topK results
+    val neigs = topByKey(results, k)(Ordering.by(-_._2)).map { case (lidx, iter) => 
+      lidx -> iter.map{ case(neigh, _, idx) => new TreeLP(LPUtils.fromJavaLP(neigh.asInstanceOf[DataLP]), idx, null)}
+    }
+    
+    indexedData.join(neigs).values.map{ case(lp, neigs) =>
+      val tlp = new TreeLP(lp, searchIndex(lp.features, topTree.value), null)
+      tlp -> neigs
+    }
+
+  }
+  
+  private def fastkNNQuery(data: RDD[LabeledPoint], k: Int): RDD[(TreeLP, Array[TreeLP])] = {
+
+    val searchData = data.map { vector =>
+        val indices = searchIndex(vector.features, topTree.value)
+        assert(indices != -1, s"indices must be non-empty: $vector")
+        indices -> vector
+    }.partitionBy(new HashPartitioner(trees.partitions.length))
+
+    // for each partition, search points within corresponding child tree
+    searchData.zipPartitions(trees) {
+      (childData, trees) =>
+        val tree = trees.next()
+        assert(!trees.hasNext)
+        childData.map {
+          case (ipart, point) =>
+            val lp = new TreeLP(point, ipart, null)
+            lp -> tree.kNNQuery(k, point.features.toArray.map(_.toFloat))
+              .map(pair => new TreeLP(LPUtils.fromJavaLP(pair.data.asInstanceOf[DataLP]), ipart, null))
+              .toArray            
+        }  
+    }
+    
   }
   
   def predict(data: RDD[LabeledPoint], k: Int): RDD[(Double, Double)] = {
@@ -142,6 +164,14 @@ class StreamingDistributedKNNModel (
       }   
     } else {
       data.context.emptyRDD[(Double, Double)]
+    }
+  } 
+  
+  def kNNQuery(data: RDD[LabeledPoint], k: Int): RDD[(TreeLP, Array[TreeLP])] = {
+    if(topTree != null) {
+      if(tau > 0) accuratekNNQuery(data, k) else fastkNNQuery(data, k)
+    } else {
+      data.context.emptyRDD[(TreeLP, Array[TreeLP])]
     }
   }
   
@@ -265,8 +295,7 @@ class StreamingDistributedKNN (
         if (csize > 0){
           // Swap model
           val oldModel = model
-          model = if(edition) RNGedition(rdd) else insertNewExamples(rdd)
-          logInfo("Number of instances in the case-base: " + model.trees.map(_.getSize).sum)
+          model = if(edition) RNGedition(rdd) else insertNewExamples(rdd)          
           oldModel.trees.unpersist()          
           
           val tau = if(nelem > DEFAULT_SIZE_ESTIMATION && overlapDistance < 0) {
@@ -280,6 +309,7 @@ class StreamingDistributedKNN (
           logInfo("Tau is: " + tau)
           model.tau = tau
         }
+        logInfo("Number of instances in the case-base: " + model.trees.map(_.getSize).sum)
       }
     }
   }
@@ -311,8 +341,8 @@ class StreamingDistributedKNN (
         }
         idx -> min
       }.maxBy(_._2)._1
+      
       val firstLoad = comb(bestc)
-      //val indexMap = firstLoad.map(_.features).zipWithIndex.toMap
       val bTopTree = rdd.context.broadcast(new MTreeWrapper(firstLoad.zipWithIndex.map(lp => LPUtils.toIndexedJavaLP(lp._1, lp._2))))
       
       val tau = if(overlapDistance < 0) {
@@ -329,6 +359,7 @@ class StreamingDistributedKNN (
         val childTree = new MTreeWrapper(itr.map(t => LPUtils.toJavaLP(t._1)).toArray)
         Iterator(childTree)
       }.persist(StorageLevel.MEMORY_AND_DISK)
+      logInfo("Number of instances in the new case-base: " + trees.map(_.getSize).sum)
         
       new StreamingDistributedKNNModel(bTopTree, trees, tau)
   }
@@ -531,7 +562,7 @@ object StreamingDistributedKNN {
 * @param tree [[MetricTree]] used to find leaf
 */
 class KNNPartitioner(treeIndex: Broadcast[MTreeWrapper]) extends Partitioner {
-  override def numPartitions: Int = treeIndex.value.getSize
+  override def numPartitions: Int = treeIndex.value.getIterator.map(_.asInstanceOf[IndexedLP].getIndex).max + 1
 
   override def getPartition(key: Any): Int = {
     key match {
