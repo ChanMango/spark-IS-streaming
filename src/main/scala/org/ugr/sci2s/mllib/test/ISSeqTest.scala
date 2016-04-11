@@ -24,17 +24,17 @@ object ISSeqTest {
     val sc = new SparkContext(conf)
     // Create a local StreamingContext with two working thread and batch interval of 1 second.
     // The master requires 2 cores to prevent from a starvation scenario.
-    val k = 5
-    val points = scala.io.Source.fromFile("/home/sramirez/datasets/poker-5-fold/streaming/poker-medium.dat").getLines().toSeq.map(LabeledPoint.parse)   
-    val tree = new MTreeWrapper(points.slice(0, 100).map(lp => new DataLP(lp.features.toArray.map(_.toFloat), lp.label.toFloat)).toArray)
-    val process = (p: LabeledPoint) => {
+    val k = 10
+    val points = scala.io.Source.fromFile("/home/sramirez/datasets/poker-5-fold/streaming/poker-10K.dat").getLines().toSeq.map(LabeledPoint.parse)   
+    val tree = new MTreeWrapper(points.slice(0, 500).map(lp => new DataLP(lp.features.toArray.map(_.toFloat), lp.label.toFloat)).toArray)
+      val process = (p: LabeledPoint) => {
         val neighbs = tree.kNNQuery(10, p.features.toArray.map(_.toFloat)).map{t => 
-          new TreeLP(LPUtils.fromJavaLP(t.data.asInstanceOf[DataLP]), -1, NONE)
+          new TreeLP(LPUtils.fromJavaLP(t.data.asInstanceOf[DataLP]), -1, null)
         }
-        val tlp = new TreeLP(p, -1, NONE) 
+        val tlp = new TreeLP(p, -1, null) 
         tlp -> neighbs.toArray
     } 
-    for(sl <- points.slice(100, points.size).grouped(100)) {      
+    for(sl <- points.slice(500, points.size).grouped(50)) {      
       val slrdd = sc.parallelize(sl.map(process), 5)    
       val filtered = InstanceSelection.instanceSelection(slrdd)  
       
@@ -57,7 +57,8 @@ object ISSeqTest {
     val nsize = tree.getSize()
     println("Old size: " + points.size)
     println("New size: " + nsize)
-    println("Number of matches: " + points.map(predict).filter{ case (l,p) => l == p}.length)
+    val test = scala.io.Source.fromFile("/home/sramirez/datasets/poker-5-fold/streaming/poker-10K2.dat").getLines().toSeq.map(LabeledPoint.parse)   
+    println("Number of matches: " + test.map(predict).filter{ case (l,p) => l == p}.length)
     //val estimatedTime = (System.currentTimeMillis() - startTime) / 1000f
     //println("Estimated Time: " + estimatedTime)
   }

@@ -28,9 +28,16 @@ object QueuRDDStreamingTest {
         }
     }).toMap  
     
-    val input = params.getOrElse("input", "/home/sramirez/datasets/poker-5-fold/streaming/poker-10K.dat")    
+    
+    val input = params.getOrElse("input", "/user/spark/datasets/kddcup_full_normal_versus_DOS-5-fold/kddcup_full_normal_versus_DOS-5-1tra.data") 
+    val header = params.getOrElse("header", "/user/spark/datasets/kddcup_full_normal_versus_DOS-5-fold/kddcup_full_normal_versus_DOS.info") 
+    val typeConversion = KeelParser.parseHeaderFile(sc, header) 
+    val bcTypeConv = sc.broadcast(typeConversion)
+    val lines = sc.textFile(input: String)
+    lines.map(line => KeelParser.parseLabeledPoint(bcTypeConv.value, line))   
+    
     val k = params.getOrElse("k", "1").toInt
-    val rate = params.getOrElse("rate", "2500").toInt
+    val rate = params.getOrElse("rate", "1000000").toInt
     val seed = params.getOrElse("seed", "237597430").toLong
     
     val inputRDD = sc.textFile(input).map(LabeledPoint.parse).cache
