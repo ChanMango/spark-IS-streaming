@@ -157,7 +157,7 @@ class StreamingDistributedKNNModel (
   }
   
   def predict(data: RDD[LabeledPoint], k: Int): RDD[(Double, Double)] = {
-    if(topTree != null && data.count > 0) {
+    if(topTree != null && !data.isEmpty()) {
       kNNQuery(data, k).map{ case (lp, arr) =>
         val pred = arr.map(_.point.label).groupBy(identity).maxBy(_._2.size)._1
         (lp.point.label, pred)
@@ -292,7 +292,7 @@ class StreamingDistributedKNN (
           nelem = 0
         }
         // Insert new examples
-        if (csize > 0){
+        if (!rdd.isEmpty()){
           // Swap model
           val oldModel = model
           model = if(edition) RNGedition(rdd) else insertNewExamples(rdd)          
@@ -316,8 +316,8 @@ class StreamingDistributedKNN (
   
   private def isUnbalanced() = {
     if(model != null){
-      val sizes = model.trees.map(_.getSize) 
-      math.log(sizes.max) / math.log(2) > math.log(sizes.min) / math.log(2) * 1.5
+      val sizes = model.trees.map(_.getSize).collect()
+      math.log(sizes.max) / math.log(2) > math.log(sizes.min) / math.log(2) * 2.0
     } else {
       false
     }

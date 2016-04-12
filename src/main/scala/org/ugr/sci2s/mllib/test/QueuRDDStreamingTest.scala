@@ -44,8 +44,6 @@ object QueuRDDStreamingTest {
     val typeConversion = KeelParser.parseHeaderFile(sc, header) 
     val bcTypeConv = sc.broadcast(typeConversion)
     val inputRDD = sc.textFile(input: String).map(line => KeelParser.parseLabeledPoint(bcTypeConv.value, line))
-      .repartition(npart)
-      .cache
     
     // Transform simple RDD into a QueuRDD for streaming
     //val inputRDD = sc.textFile(input).repartition().map(LabeledPoint.parse).cache
@@ -54,8 +52,8 @@ object QueuRDDStreamingTest {
     val nchunks = math.ceil(1 / chunkPerc).toInt
     println("Number of chunks: " + nchunks)
     println("Size of chunks: " + chunkPerc)    
-    val arrayRDD = inputRDD.randomSplit(Array.fill[Double](nchunks)(chunkPerc), seed)
-    val trainingData = ssc.queueStream(scala.collection.mutable.Queue(arrayRDD: _*), oneAtATime = true)
+    val arrayRDD = inputRDD.repartition(npart).randomSplit(Array.fill[Double](nchunks)(chunkPerc), seed)
+    val trainingData = ssc.queueStream(scala.collection.mutable.Queue(arrayRDD: _*), oneAtATime = false).cache()
     
     val model = new StreamingDistributedKNN().setNPartitions(ntrees).setOverlapDistance(overlap)
     val preds = model.predictOnValues(trainingData, k)
