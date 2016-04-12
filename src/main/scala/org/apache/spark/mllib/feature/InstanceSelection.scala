@@ -35,9 +35,9 @@ object InstanceSelection {
     }    
   }
   
-  def instanceSelection(elements: RDD[(TreeLP, Array[TreeLP])]) = {
+  def instanceSelection(elements: RDD[(TreeLP, Array[TreeLP])], removeOld: Boolean = false) = {
     val processed = computeDistances(elements)
-    val edited = processed.map(elems => localRNGE(elems))
+    val edited = processed.map(elems => localRNGE(elems, removeOld))
     
     //println("Inserted in RNGE: " + edited.flatMap(x => x).filter(_.point.action == INSERT).count())    
     //println("Removed in RNGE: " + edited.flatMap(x => x).filter(_.point.action == REMOVE).count())

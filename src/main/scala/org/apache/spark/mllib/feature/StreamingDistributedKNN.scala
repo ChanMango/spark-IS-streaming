@@ -196,16 +196,17 @@ class StreamingDistributedKNNModel (
  */
 class StreamingDistributedKNN (    
     var kGraph: Int,
-    var nPartitions: Int,
+    var nTrees: Int,
     var overlapDistance: Double,
     var sampleSizes: Array[Int],
+    var edited: Boolean,
+    var removeOld: Boolean,
     var seed: Long) extends Logging with Serializable {
 
-  def this() = this(10, 2, -1, (100 to 1000 by 100).toArray, 26827651492L)
+  def this() = this(10, 2, -1, (100 to 1000 by 100).toArray, true, false, 26827651492L)
   
-  private val DEFAULT_SIZE_ESTIMATION = 100000
   private val DEFAULT_NUMBER_SAMPLES = 10
-
+  
   protected var model: StreamingDistributedKNNModel = new StreamingDistributedKNNModel(null, null, 0.0)
 
   /**
@@ -217,9 +218,19 @@ class StreamingDistributedKNN (
     this
   }
   
-  def setNPartitions(np: Int): this.type = {
-    require(np > 1)
-    this.nPartitions = np
+  def setEdited(edited: Boolean): this.type = {
+    this.edited = edited
+    this
+  }
+    
+  def setRemovedOld(ro: Boolean): this.type = {
+    this.removeOld = ro
+    this
+  }    
+  
+  def setNTrees(nt: Int): this.type = {
+    require(nt > 1)
+    this.nTrees = nt
     this
   }
   
@@ -257,28 +268,30 @@ class StreamingDistributedKNN (
    *
    * @param data DStream containing vector data
    */
-  def trainOn(data: DStream[LabeledPoint], edition: Boolean = true) {
+  def trainOn(data: DStream[LabeledPoint]) {
     val sc = data.context.sparkContext
     val queue = new Queue[LabeledPoint]
     var nelem = 0L
     
     data.foreachRDD { (rdd, time) =>
-      val csize = rdd.count()
-      nelem += csize
+      
       if(model.topTree == null) {   
         // There is no master tree created yet
-        if(nelem >= nPartitions) {
+        val csize = rdd.count()
+        nelem += csize
+        if(nelem >= nTrees) {
           // Enough elements to create the master and the sub-trees
           val sc = rdd.context
-          val firstRDD = if(queue.size > 0) rdd.union(sc.parallelize(queue, nPartitions)) else rdd
+          val firstRDD = if(queue.size > 0) rdd.union(sc.parallelize(queue, nTrees)) else rdd
           model = initializeModel(firstRDD)
+          logInfo("Number of instances in the new case-base: " + model.trees.map(_.getSize).sum) // Important
           queue.clear()
           nelem = 0
         } else {          
           queue ++= rdd.collect()
         }
       } else {
-        if(isUnbalanced){ 
+        if(isUnbalanced()){ // No re-balance for static experiments 
           logInfo("Re-balancing the distributed m-tree." + 
               "One or more sub-trees have grown too much.")
           // Re-balance the whole case-base. New topTree and a new re-partition process is started for sub-trees
@@ -288,6 +301,7 @@ class StreamingDistributedKNN (
           // Swap model
           val oldModel = model
           model = initializeModel(casebase)
+          logInfo("Number of instances in the new case-base: " + model.trees.map(_.getSize).sum) // Important
           oldModel.trees.unpersist()
           nelem = 0
         }
@@ -295,29 +309,17 @@ class StreamingDistributedKNN (
         if (!rdd.isEmpty()){
           // Swap model
           val oldModel = model
-          model = if(edition) RNGedition(rdd) else insertNewExamples(rdd)          
-          oldModel.trees.unpersist()          
-          
-          val tau = if(nelem > DEFAULT_SIZE_ESTIMATION && overlapDistance < 0) {
-            nelem = 0
-            val allExamples = model.trees.flatMap(_.getIterator)
-              .map(lp => new VectorWithNorm(LPUtils.fromJavaLP(lp).features))
-            estimateTau(allExamples, sampleSizes, seed)
-          } else {
-            model.tau 
-          }
-          logInfo("Tau is: " + tau)
-          model.tau = tau
+          model = if(edited) editModel(rdd) else insertNewExamples(rdd)
+          logInfo("Number of instances in the edited case-base: " + model.trees.map(_.getSize).sum) // Important
+          oldModel.trees.unpersist()
         }
-        logInfo("Number of instances in the case-base: " + model.trees.map(_.getSize).sum)
       }
     }
   }
   
   private def isUnbalanced() = {
     if(model != null){
-      val sizes = model.trees.map(_.getSize).collect()
-      math.log(sizes.max) / math.log(2) > math.log(sizes.min) / math.log(2) * 2.0
+      model.trees.filter(_.getSize < kGraph * 3).count() > 0
     } else {
       false
     }
@@ -326,8 +328,8 @@ class StreamingDistributedKNN (
   private def initializeModel(rdd: RDD[LabeledPoint]) = {
       // Initialize topTree (first registers coming...)
       val rand = new XORShiftRandom(this.seed + 2)
-      val samples = rdd.takeSample(false, this.nPartitions * DEFAULT_NUMBER_SAMPLES, rand.nextLong())
-      val comb = samples.grouped(this.nPartitions).toArray
+      val samples = rdd.takeSample(false, nTrees * DEFAULT_NUMBER_SAMPLES, rand.nextLong())
+      val comb = samples.grouped(nTrees).toArray
       val bestc = comb.zipWithIndex.map { case (a, idx) =>
         var min = Double.PositiveInfinity
         for(i <- 0 until a.length) {
@@ -359,15 +361,14 @@ class StreamingDistributedKNN (
         val childTree = new MTreeWrapper(itr.map(t => LPUtils.toJavaLP(t._1)).toArray)
         Iterator(childTree)
       }.persist(StorageLevel.MEMORY_AND_DISK)
-      logInfo("Number of instances in the new case-base: " + trees.map(_.getSize).sum)
         
       new StreamingDistributedKNNModel(bTopTree, trees, tau)
   }
   
-  private def RNGedition(rdd: RDD[LabeledPoint]): StreamingDistributedKNNModel = {
+  private def editModel(rdd: RDD[LabeledPoint]): StreamingDistributedKNNModel = {
       val localGraph = model.kNNQuery(rdd, kGraph)
-      val edited = InstanceSelection.instanceSelection(localGraph)
-      val newTrees = editTrees(edited, model.trees).persist(StorageLevel.MEMORY_AND_DISK)          
+      val edited = InstanceSelection.instanceSelection(localGraph, removeOld)
+      val newTrees = editTrees(edited, model.trees).persist(StorageLevel.MEMORY_AND_DISK)
       new StreamingDistributedKNNModel(model.topTree, newTrees, model.tau)
   }
   

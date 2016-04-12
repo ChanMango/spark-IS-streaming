@@ -21,7 +21,7 @@ object MLStreamingTest {
     val trainingData = ssc.textFileStream("/home/sramirez/datasets/poker-5-fold/streaming/poker-small.tra/").map(LabeledPoint.parse)
     val testData = ssc.textFileStream("/home/sramirez/datasets/poker-5-fold/streaming/poker-small.tst/").map(LabeledPoint.parse)
     
-    val model = new StreamingDistributedKNN().setNPartitions(4)
+    val model = new StreamingDistributedKNN().setNTrees(4)
 
     model.trainOn(trainingData)
     model.predictOnValues(testData, k).filter{ case (label, pred) => label == pred}.count
