@@ -156,6 +156,37 @@ class StreamingDistributedKNNModel (
     
   }
   
+  def fastEdition(data: RDD[LabeledPoint], kGraph: Int, removeOld: Boolean): RDD[MTreeWrapper] = {
+    
+    val searchData = data.map { vector =>
+        val indices = searchIndex(vector.features, topTree.value)
+        assert(indices != -1, s"indices must be non-empty: $vector")
+        indices -> vector
+    }.partitionBy(new HashPartitioner(trees.partitions.length))
+
+    // for each partition, search and edit points within corresponding child tree
+    searchData.zipPartitions(trees) {
+      (childData, trees) =>
+        val tree = trees.next()
+        assert(!trees.hasNext)
+        childData.foreach {
+          case (ipart, point) =>
+            val lp = new TreeLP(point, ipart, null)
+            val neighbors = tree.kNNQuery(kGraph, point.features.toArray.map(_.toFloat))
+              .map(pair => new TreeLP(LPUtils.fromJavaLP(pair.data.asInstanceOf[DataLP]), ipart, null))
+              .toArray   
+            val edited = InstanceSelection.localInstanceSelection(lp -> neighbors, removeOld)
+            edited.foreach{ lp => 
+              if(lp.action == INSERT)
+                tree.insert(LPUtils.toJavaLP(lp.point))
+              else if (lp.action == REMOVE)
+                tree.remove(LPUtils.toJavaLP(lp.point))
+            }            
+        } 
+        Iterator(tree)
+    }    
+  }
+  
   def predict(data: RDD[LabeledPoint], k: Int): RDD[(Double, Double)] = {
     if(topTree != null && !data.isEmpty()) {
       kNNQuery(data, k).map{ case (lp, arr) =>
@@ -319,7 +350,7 @@ class StreamingDistributedKNN (
   
   private def isUnbalanced() = {
     if(model != null){
-      model.trees.filter(_.getSize < kGraph * 3).count() > 0
+      !model.trees.filter(_.getSize < kGraph * 2).isEmpty()
     } else {
       false
     }
@@ -328,23 +359,7 @@ class StreamingDistributedKNN (
   private def initializeModel(rdd: RDD[LabeledPoint]) = {
       // Initialize topTree (first registers coming...)
       val rand = new XORShiftRandom(this.seed + 2)
-      val samples = rdd.takeSample(false, nTrees * DEFAULT_NUMBER_SAMPLES, rand.nextLong())
-      val comb = samples.grouped(nTrees).toArray
-      val bestc = comb.zipWithIndex.map { case (a, idx) =>
-        var min = Double.PositiveInfinity
-        for(i <- 0 until a.length) {
-          val ne1 = new VectorWithNorm(a(i).features)
-          for(j <- 0 until a.length if i != j) {
-            val dist = new VectorWithNorm(a(j).features).fastDistance(ne1)
-            if(dist < min){
-              min = dist  
-            }            
-          }
-        }
-        idx -> min
-      }.maxBy(_._2)._1
-      
-      val firstLoad = comb(bestc)
+      val firstLoad = rdd.takeSample(false, nTrees, rand.nextLong())
       val bTopTree = rdd.context.broadcast(new MTreeWrapper(firstLoad.zipWithIndex.map(lp => LPUtils.toIndexedJavaLP(lp._1, lp._2))))
       
       val tau = if(overlapDistance < 0) {
@@ -366,9 +381,14 @@ class StreamingDistributedKNN (
   }
   
   private def editModel(rdd: RDD[LabeledPoint]): StreamingDistributedKNNModel = {
-      val localGraph = model.kNNQuery(rdd, kGraph)
-      val edited = InstanceSelection.instanceSelection(localGraph, removeOld)
-      val newTrees = editTrees(edited, model.trees).persist(StorageLevel.MEMORY_AND_DISK)
+    
+      val newTrees = if(model.tau > 0) {
+        val localGraph = model.kNNQuery(rdd, kGraph)
+        val edited = InstanceSelection.instanceSelection(localGraph, removeOld)        
+        editTrees(edited, model.trees).persist(StorageLevel.MEMORY_AND_DISK)
+      } else {
+        model.fastEdition(rdd, kGraph, removeOld).persist(StorageLevel.MEMORY_AND_DISK)
+      }      
       new StreamingDistributedKNNModel(model.topTree, newTrees, model.tau)
   }
   

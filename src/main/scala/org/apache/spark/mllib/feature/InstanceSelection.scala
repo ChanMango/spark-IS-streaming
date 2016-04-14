@@ -19,31 +19,41 @@ object InstanceSelection {
   
   case class TreeLPNorm(point: TreeLP, norm: VectorWithNorm, distances: Array[Float])
   
-  private def computeDistances(neighbors: RDD[(TreeLP, Array[TreeLP])]) = {
-    neighbors.map{ case (p, neigs) => 
-      val elems = new TreeLPNorm(new TreeLP(p.point, p.itree, NOINSERT), new VectorWithNorm(p.point.features), Array.fill[Float](neigs.length + 1)(Float.PositiveInfinity)) +:
-        neigs.map(q => new TreeLPNorm(new TreeLP(q.point, q.itree, NOREMOVE), new VectorWithNorm(q.point.features), Array.fill[Float](neigs.length + 1)(Float.PositiveInfinity)))
-        
-      /* Compute distances */
-      for(i <- 0 until elems.length) { 
-        val dist = new Array[Float](elems.length)
-        for(j <- 0 until elems.length if i != j) {
-          elems(i).distances(j) = elems(i).norm.fastDistance(elems(j).norm).toFloat
-        }
-      }  
-      elems
-    }    
+  private def computeDistances(elements: (TreeLP, Array[TreeLP])) = {
+    val p = elements._1
+    val elems = new TreeLPNorm(new TreeLP(p.point, p.itree, NOINSERT), new VectorWithNorm(p.point.features), Array.fill[Float](elements._2.length + 1)(Float.PositiveInfinity)) +:
+      elements._2.map(q => new TreeLPNorm(new TreeLP(q.point, q.itree, NOREMOVE), new VectorWithNorm(q.point.features), Array.fill[Float](elements._2.length + 1)(Float.PositiveInfinity)))
+      
+    /* Compute distances */
+    for(i <- 0 until elems.length) { 
+      val dist = new Array[Float](elems.length)
+      for(j <- 0 until elems.length if i != j) {
+        elems(i).distances(j) = elems(i).norm.fastDistance(elems(j).norm).toFloat
+      }
+    }  
+    elems    
   }
   
   def instanceSelection(elements: RDD[(TreeLP, Array[TreeLP])], removeOld: Boolean = false) = {
-    val processed = computeDistances(elements)
-    val edited = processed.map(elems => localRNGE(elems, removeOld))
+    val edited = elements.map{ els =>
+      localRNGE(computeDistances(els), removeOld)      
+    }
     
     //println("Inserted in RNGE: " + edited.flatMap(x => x).filter(_.point.action == INSERT).count())    
     //println("Removed in RNGE: " + edited.flatMap(x => x).filter(_.point.action == REMOVE).count())
     
     edited.flatMap(x => x).filter(lp => lp.point.action == INSERT || lp.point.action == REMOVE)
       .map(_.point)
+  }
+  
+  def localInstanceSelection(elements: (TreeLP, Array[TreeLP]), removeOld: Boolean = false) = {
+    val processed = computeDistances(elements)
+    val edited = localRNGE(processed, removeOld)
+    
+    //println("Inserted in RNGE: " + edited.flatMap(x => x).filter(_.point.action == INSERT).count())    
+    //println("Removed in RNGE: " + edited.flatMap(x => x).filter(_.point.action == REMOVE).count())
+    
+    edited.filter(lp => lp.point.action == INSERT || lp.point.action == REMOVE).map(_.point)
   }
   
   
