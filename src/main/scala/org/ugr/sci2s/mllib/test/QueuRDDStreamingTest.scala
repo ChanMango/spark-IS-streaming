@@ -114,10 +114,8 @@ object QueuRDDStreamingTest extends Logging {
         nBatches += 1
       logInfo("Number of batches processed: " + nBatches)
       val binfo = batchCompleted.batchInfo
-      logInfo("Batch delay:" + binfo.processingDelay.getOrElse(0L))
-      val end = binfo.processingEndTime.getOrElse(0L)
-      val start = binfo.processingStartTime.getOrElse(0L)
-      logInfo("Batch processing time:" + (end - start))
+      logInfo("Batch scheduling delay: " + binfo.schedulingDelay.getOrElse(0L))
+      logInfo("Batch processing time: " + binfo.processingDelay.getOrElse(0L))
     }
   }
 

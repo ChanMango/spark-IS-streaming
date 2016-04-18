@@ -40,8 +40,8 @@ object LogAnalyzer extends Logging {
     val dirName = params.getOrElse("dirName", "/home/sramirez/git/spark-IS-streaming/")
     val files = new java.io.File(dirName).listFiles.filter(_.getName.endsWith(".out"))
     
-    for(file <- files){
-      val fileName = file.getName
+    for(jfile <- files){
+      val fileName: String = jfile.getName
       val outputFile = fileName.split("//").last + ".csv"
       val regReduce = "reduce at QueuRDDStreamingTest.scala:(\\d{2,})\\) finished in".r
       val linesToSelect = (line: String) => {
@@ -50,19 +50,24 @@ object LogAnalyzer extends Logging {
         line.contains("map at StreamingDistributedKNN.scala:137") ||
         line.contains("map at StreamingDistributedKNN.scala:161") ||
         line.contains("sum at StreamingDistributedKNN.scala:344") ||  
-        line.contains("Number of instances in the modified case-base")
+        line.contains("Number of instances in the modified case-base") ||
+        line.contains("Accuracy per batch") ||        
+        line.contains("Batch scheduling delay") ||
+        line.contains("Batch processing time")
       }
       
-      val lines = file.getLines.toArray.zipWithIndex.filter{case (line, _) => linesToSelect(line)}
-      val nbatches = lines.filter(_._1.contains("Number of instances in the modified case-base")).length
+      val lines = Source.fromFile(jfile.getAbsolutePath).getLines.toArray.zipWithIndex.filter{case (line, _) => linesToSelect(line)}
+      val nbatches = lines.filter(_._1.contains("Batch processing time")).length
       val trainTime = Array.fill[Float](nbatches)(0)
       val classificTime = Array.fill[Float](nbatches)(0)
       val accuracy = Array.fill[Float](nbatches)(0)
       val instances = Array.fill[Int](nbatches)(0)
-      var trainIndex = 0; var classificIndex = 0
-      var index = 0;
+      val delays = Array.fill[Float](nbatches)(0)
+      val batchTime = Array.fill[Float](nbatches)(0)
+      var index = 0
       
       println("Num. batches: " + nbatches)
+      println("Lines: " + lines.mkString("\n"))
       for((line, _) <- lines) {
         val tokens = line.split(" ")
         if(line.contains("map at StreamingDistributedKNN.scala:137")) {
@@ -74,18 +79,23 @@ object LogAnalyzer extends Logging {
         } else if(line.contains("sum at StreamingDistributedKNN.scala:344")) {
           classificTime(index) += tokens(tokens.length - 2).replace(',', '.').toFloat
         } else if(line.contains("Number of instances in the modified case-base")) {
-          instances(index) = tokens(tokens.length - 1).toFloat.toInt
-          index += 1
+          instances(index) = tokens(tokens.length - 1).toFloat.toInt 
         } else if (line.contains("Accuracy per batch")) {
-          accuracy(index) = tokens(tokens.length - 1).toFloat        
-        }
-        
+          accuracy(index) = tokens(tokens.length - 1).toFloat      
+        } else if (line.contains("Batch scheduling delay")) {
+          delays(index) = tokens(tokens.length - 1).toFloat        
+        } else if (line.contains("Batch processing time")) {
+          batchTime(index) = tokens(tokens.length - 1).toFloat
+          index += 1
+        }        
       }
       
       val output = "Training time," + trainTime.mkString(",") + "\n" + 
         "Classification time," + classificTime.mkString(",") + "\n" +
+        "Scheduling delay," + delays.mkString(",") + "\n" +
+        "Batch time," + batchTime.mkString(",") + "\n" +        
         "Accuracy," + accuracy.mkString(",") + "\n" + 
-        "Total acc," + accuracy.sum / accuracy.length + "\n" +
+        "Total acc," + accuracy.slice(1, accuracy.length).sum / accuracy.length + "\n" +
         "Instances, " + instances.mkString(",") + "\n"
   
       println(output)
