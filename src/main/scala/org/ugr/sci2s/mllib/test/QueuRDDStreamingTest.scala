@@ -15,6 +15,8 @@ import mtree.DataLP
 import mtree.IndexedLP
 import org.apache.spark.mllib.knn.VectorWithNorm
 import mtree.MTree
+import org.apache.spark.mllib.linalg.Vectors
+import java.util.Calendar
 
 object QueuRDDStreamingTest extends Logging {
 
@@ -31,9 +33,7 @@ object QueuRDDStreamingTest extends Logging {
     
     println("Parameters: " + params.toString())
     
-    //val input = params.getOrElse("input", "/home/sramirez/datasets/poker-5-fold/poker-5-1tra.data") 
-    //val header = params.getOrElse("header", "/home/sramirez/datasets/poker-5-fold/poker.header") 
-    
+    val fileType = params.getOrElse("type", "keel") 
     val input = params.getOrElse("input", "/home/sramirez/datasets/poker-5-fold/poker-5-1tst.data") 
     val header = params.getOrElse("header", "/home/sramirez/datasets/poker-5-fold/poker.header") 
     val output = params.getOrElse("output", "/home/sramirez/datasets/poker-5-fold/output") 
@@ -46,7 +46,8 @@ object QueuRDDStreamingTest extends Logging {
     val overlap = params.getOrElse("overlap", "0.0").toDouble
     val edited = params.getOrElse("edited", "true").toBoolean
     val removeOld = params.getOrElse("removeOld", "false").toBoolean
-    val timeout = params.getOrElse("timeout", "3600000").toLong
+    val timeout = params.getOrElse("timeout", "600000").toLong
+    val kGraph = params.getOrElse("kgraph", "10").toInt
         
     // Create a local StreamingContext with two working thread and batch interval of 1 second.
     // The master requires 2 cores to prevent from a starvation scenario.
@@ -57,20 +58,30 @@ object QueuRDDStreamingTest extends Logging {
     val ssc = new StreamingContext(conf, Milliseconds(interval))
     val sc = ssc.sparkContext
     
-    // Read file
-    val typeConversion = KeelParser.parseHeaderFile(sc, header) 
-    val bcTypeConv = sc.broadcast(typeConversion)
-    val inputRDD = sc.textFile(input: String).map(line => KeelParser.parseLabeledPoint(bcTypeConv.value, line))//.repartition(npart).cache()
+    // Read file    
+    val inputRDD = if(input == "keel") {
+      val typeConversion = KeelParser.parseHeaderFile(sc, header) 
+      val bcTypeConv = sc.broadcast(typeConversion)
+      sc.textFile(input: String).repartition(npart).map(line => KeelParser.parseLabeledPoint(bcTypeConv.value, line))
+    } else if(input == "hepmass") {
+      sc.textFile(input: String).repartition(npart).filter(line => !line.startsWith("#")).map{ line =>         
+          val arr = line split ","         
+          val label = arr.head.toDouble
+          val features = arr.slice(1, arr.length).map(_.toDouble)
+          new LabeledPoint(label, Vectors.dense(features))
+      }
+    } else {
+      sc.textFile(input: String).repartition(npart).map(LabeledPoint.parse)
+    } 
     
     // Transform simple RDD into a QueuRDD for streaming
-    //val inputRDD = sc.textFile("/home/sramirez/datasets/poker-5-fold/streaming/poker-10K.dat").repartition(npart).map(LabeledPoint.parse)
     val size = inputRDD.count()
     val nchunks = (size / rate).toInt
     val chunkPerc = 1.0 / nchunks
-    println("Number of chunks: " + nchunks)
-    println("Size of chunks: " + chunkPerc)    
+    logInfo("Number of batches: " + nchunks)
+    logInfo("Batch size: " + chunkPerc)    
     val arrayRDD = inputRDD.randomSplit(Array.fill[Double](nchunks)(chunkPerc), seed).map(_.cache())
-    println("Count by partition: " + arrayRDD.map(_.count()).mkString(","))
+    logInfo("Count by partition: " + arrayRDD.map(_.count()).mkString(",")) // Important to force the persistence
     val trainingData = ssc.queueStream(scala.collection.mutable.Queue(arrayRDD: _*), 
         oneAtATime = true)
     
@@ -81,21 +92,17 @@ object QueuRDDStreamingTest extends Logging {
       .setNTrees(ntrees)
       .setOverlapDistance(overlap)
       .setEdited(edited)
-      .setRemovedOld(removeOld)   
+      .setRemovedOld(removeOld) 
+      .setSeed(seed)
+      .setKGraph(kGraph)
     
     val preds = model.predictOnValues(trainingData, k)
         .map{case (label, pred) => if(label == pred) (1, 1)  else (0, 1)}
         .reduce{ case (t1, t2) => (t1._1 + t2._1, t1._2 + t2._2) }
-        .map{ case (wins, sum) => wins / sum.toFloat}
-        .saveAsTextFiles(output)
+        .map{ case (wins, sum) => Calendar.getInstance().getTime() + " - Accuracy per batch: " + (wins / sum.toFloat)}
+        .print()
     model.trainOn(trainingData)
-
-    /*trainingData.foreachRDD{ rdd => 
-      if(rdd.isEmpty()) {
-        ssc.stop(true, false)
-        System.exit(-1)
-      }                  
-    }*/
+    
     ssc.start()
     ssc.awaitTerminationOrTimeout(timeout)
   }
@@ -105,7 +112,12 @@ object QueuRDDStreamingTest extends Logging {
     override def onBatchCompleted(batchCompleted: StreamingListenerBatchCompleted) {   
       if(nBatches < totalBatches) 
         nBatches += 1
-      println("Number of batches processed: " + nBatches)
+      logInfo("Number of batches processed: " + nBatches)
+      val binfo = batchCompleted.batchInfo
+      logInfo("Batch delay:" + binfo.processingDelay.getOrElse(0L))
+      val end = binfo.processingEndTime.getOrElse(0L)
+      val start = binfo.processingStartTime.getOrElse(0L)
+      logInfo("Batch processing time:" + (end - start))
     }
   }
 

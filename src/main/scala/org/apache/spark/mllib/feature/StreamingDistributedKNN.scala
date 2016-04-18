@@ -315,7 +315,7 @@ class StreamingDistributedKNN (
           val sc = rdd.context
           val firstRDD = if(queue.size > 0) rdd.union(sc.parallelize(queue, nTrees)) else rdd
           model = initializeModel(firstRDD)
-          logInfo("Number of instances in the new case-base: " + model.trees.map(_.getSize).sum) // Important
+          logInfo("Number of instances in the new case-base: " + model.trees.map(_.getSize).sum.toInt) // Important
           queue.clear()
           nelem = 0
         } else {          
@@ -332,7 +332,7 @@ class StreamingDistributedKNN (
           // Swap model
           val oldModel = model
           model = initializeModel(casebase)
-          logInfo("Number of instances in the new case-base: " + model.trees.map(_.getSize).sum) // Important
+          logInfo("Number of instances in the new case-base: " + model.trees.map(_.getSize).sum.toInt) // Important
           oldModel.trees.unpersist()
           nelem = 0
         }
@@ -341,7 +341,7 @@ class StreamingDistributedKNN (
           // Swap model
           val oldModel = model
           model = if(edited) editModel(rdd) else insertNewExamples(rdd)
-          logInfo("Number of instances in the edited case-base: " + model.trees.map(_.getSize).sum) // Important
+          logInfo("Number of instances in the modified case-base: " + model.trees.map(_.getSize).sum.toInt) // Important
           oldModel.trees.unpersist()
         }
       }

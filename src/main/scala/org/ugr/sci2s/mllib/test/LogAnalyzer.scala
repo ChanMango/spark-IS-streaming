@@ -82,9 +82,10 @@ object LogAnalyzer extends Logging {
         
       }
       
-      val output = "Training time, " + trainTime.mkString(",") + "\n" + 
-        "Classification time, " + classificTime.mkString(",") + "\n" +
-        "Accuracy, " + accuracy.mkString(",") + "\n" + 
+      val output = "Training time," + trainTime.mkString(",") + "\n" + 
+        "Classification time," + classificTime.mkString(",") + "\n" +
+        "Accuracy," + accuracy.mkString(",") + "\n" + 
+        "Total acc," + accuracy.sum / accuracy.length + "\n" +
         "Instances, " + instances.mkString(",") + "\n"
   
       println(output)
