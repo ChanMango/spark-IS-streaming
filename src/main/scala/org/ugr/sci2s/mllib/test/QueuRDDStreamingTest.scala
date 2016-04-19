@@ -66,7 +66,7 @@ object QueuRDDStreamingTest extends Logging {
     } else if(fileType == "labeled") {      
       sc.textFile(input: String).repartition(npart).map(LabeledPoint.parse)
     } else {
-      sc.textFile(input: String).filter(line => !line.startsWith("#")).map{ line =>         
+      sc.textFile(input: String).filter(line => !line.startsWith("#")).repartition(npart).map{ line =>         
           val arr = line split ","         
           val label = arr.head.toDouble
           val features = arr.slice(1, arr.length).map(_.toDouble)

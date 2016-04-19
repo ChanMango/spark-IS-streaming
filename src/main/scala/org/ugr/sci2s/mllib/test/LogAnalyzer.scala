@@ -37,7 +37,7 @@ object LogAnalyzer extends Logging {
     
     println("Parameters: " + params.toString())
     
-    val dirName = params.getOrElse("dirName", "/home/sramirez/git/spark-IS-streaming/")
+    val dirName = params.getOrElse("dirName", "/home/sramirez/git/spark-IS-streaming/logs/")
     val files = new java.io.File(dirName).listFiles.filter(_.getName.endsWith(".out"))
     
     for(jfile <- files){
@@ -47,9 +47,9 @@ object LogAnalyzer extends Logging {
       val linesToSelect = (line: String) => {
         regReduce.findFirstIn(line).isDefined || 
         line.contains("Accuracy per batch") ||
-        line.contains("map at StreamingDistributedKNN.scala:137") ||
-        line.contains("map at StreamingDistributedKNN.scala:161") ||
-        line.contains("sum at StreamingDistributedKNN.scala:344") ||  
+        line.contains("map at StreamingDistributedKNN.scala:137) finished") ||
+        line.contains("map at StreamingDistributedKNN.scala:161) finished") ||
+        line.contains("sum at StreamingDistributedKNN.scala:344) finished") ||  
         line.contains("Number of instances in the modified case-base") ||
         line.contains("Accuracy per batch") ||        
         line.contains("Batch scheduling delay") ||
@@ -67,17 +67,16 @@ object LogAnalyzer extends Logging {
       var index = 0
       
       println("Num. batches: " + nbatches)
-      println("Lines: " + lines.mkString("\n"))
       for((line, _) <- lines) {
         val tokens = line.split(" ")
-        if(line.contains("map at StreamingDistributedKNN.scala:137")) {
-          trainTime(index) += tokens(tokens.length - 2).replace(',', '.').toFloat
+        if(line.contains("map at StreamingDistributedKNN.scala:137) finished")) {
+          classificTime(index) += tokens(tokens.length - 2).replace(',', '.').toFloat
         } else if(regReduce.findFirstIn(line).isDefined) {
+          classificTime(index) += tokens(tokens.length - 2).replace(',', '.').toFloat
+        } else if(line.contains("map at StreamingDistributedKNN.scala:161) finished")) {
           trainTime(index) += tokens(tokens.length - 2).replace(',', '.').toFloat
-        } else if(line.contains("map at StreamingDistributedKNN.scala:161")) {
-          classificTime(index) += tokens(tokens.length - 2).replace(',', '.').toFloat
-        } else if(line.contains("sum at StreamingDistributedKNN.scala:344")) {
-          classificTime(index) += tokens(tokens.length - 2).replace(',', '.').toFloat
+        } else if(line.contains("sum at StreamingDistributedKNN.scala:344) finished")) {
+          trainTime(index) += tokens(tokens.length - 2).replace(',', '.').toFloat
         } else if(line.contains("Number of instances in the modified case-base")) {
           instances(index) = tokens(tokens.length - 1).toFloat.toInt 
         } else if (line.contains("Accuracy per batch")) {
@@ -90,14 +89,17 @@ object LogAnalyzer extends Logging {
         }        
       }
       
-      val output = "Training time," + trainTime.mkString(",") + "\n" + 
-        "Classification time," + classificTime.mkString(",") + "\n" +
-        "Scheduling delay," + delays.mkString(",") + "\n" +
-        "Batch time," + batchTime.mkString(",") + "\n" +        
-        "Accuracy," + accuracy.mkString(",") + "\n" + 
-        "Total acc," + accuracy.slice(1, accuracy.length).sum / accuracy.length + "\n" +
-        "Instances, " + instances.mkString(",") + "\n"
-  
+      val newsize = classificTime.filter(_ != 0).length + 2
+      val avg = accuracy.slice(2, newsize).sum / (newsize - 2)
+      val output = "Training time," + trainTime.slice(1, newsize).mkString(",") + "\n" + 
+        "Classification time," + classificTime.slice(1, newsize).mkString(",") + "\n" +
+        "Scheduling delay," + delays.slice(1, newsize).mkString(",") + "\n" +
+        "Batch time," + batchTime.slice(1, newsize).mkString(",") + "\n" +        
+        "Accuracy," + accuracy.slice(1, newsize).mkString(",") + "\n" + 
+        "Instances, " + instances.slice(1, newsize).mkString(",") + "\n" +
+        "Total acc," + avg + "\n" +        
+        "Total batches," + newsize + "\n"
+        
       println(output)
       val file = new File(outputFile)
       val bw = new BufferedWriter(new FileWriter(file))
