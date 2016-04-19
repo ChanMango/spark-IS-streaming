@@ -44,7 +44,7 @@ object QueuRDDStreamingTest extends Logging {
     val seed = params.getOrElse("seed", "237597430").toLong
     val ntrees = params.getOrElse("ntrees", "4").toInt
     val overlap = params.getOrElse("overlap", "0.0").toDouble
-    val edited = params.getOrElse("edited", "true").toBoolean
+    val edited = params.getOrElse("edited", "false").toBoolean
     val removeOld = params.getOrElse("removeOld", "false").toBoolean
     val timeout = params.getOrElse("timeout", "600000").toLong
     val kGraph = params.getOrElse("kgraph", "10").toInt
@@ -59,32 +59,35 @@ object QueuRDDStreamingTest extends Logging {
     val sc = ssc.sparkContext
     
     // Read file    
-    val inputRDD = if(input == "keel") {
+    val inputRDD: RDD[LabeledPoint] = if(fileType == "keel") {
       val typeConversion = KeelParser.parseHeaderFile(sc, header) 
       val bcTypeConv = sc.broadcast(typeConversion)
       sc.textFile(input: String).repartition(npart).map(line => KeelParser.parseLabeledPoint(bcTypeConv.value, line))
-    } else if(input == "hepmass") {
-      sc.textFile(input: String).repartition(npart).filter(line => !line.startsWith("#")).map{ line =>         
+    } else if(fileType == "labeled") {      
+      sc.textFile(input: String).repartition(npart).map(LabeledPoint.parse)
+    } else {
+      sc.textFile(input: String).filter(line => !line.startsWith("#")).map{ line =>         
           val arr = line split ","         
           val label = arr.head.toDouble
           val features = arr.slice(1, arr.length).map(_.toDouble)
           new LabeledPoint(label, Vectors.dense(features))
       }
-    } else {
-      sc.textFile(input: String).repartition(npart).map(LabeledPoint.parse)
     } 
     
     // Transform simple RDD into a QueuRDD for streaming
+    inputRDD.cache()
     val size = inputRDD.count()
+    logInfo("Distinct: " + inputRDD.map(_.features).distinct().count())
     val nchunks = (size / rate).toInt
     val chunkPerc = 1.0 / nchunks
     logInfo("Number of batches: " + nchunks)
     logInfo("Batch size: " + chunkPerc)    
     val arrayRDD = inputRDD.randomSplit(Array.fill[Double](nchunks)(chunkPerc), seed).map(_.cache())
     logInfo("Count by partition: " + arrayRDD.map(_.count()).mkString(",")) // Important to force the persistence
+    inputRDD.unpersist()
     val trainingData = ssc.queueStream(scala.collection.mutable.Queue(arrayRDD: _*), 
         oneAtATime = true)
-    
+        
     val listen = new MyJobListener(ssc, nchunks)
     ssc.addStreamingListener(listen)
         
