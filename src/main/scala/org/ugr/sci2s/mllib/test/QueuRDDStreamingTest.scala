@@ -52,7 +52,7 @@ object QueuRDDStreamingTest extends Logging {
     // Create a local StreamingContext with two working thread and batch interval of 1 second.
     // The master requires 2 cores to prevent from a starvation scenario.
     val conf = new SparkConf().setAppName("MLStreamingTest")
-      //.setMaster("local[4]")
+      .setMaster("local[4]")
     conf.registerKryoClasses(Array(classOf[DataLP], classOf[IndexedLP], 
         classOf[TreeLP], classOf[VectorWithNorm]))
     val ssc = new StreamingContext(conf, Milliseconds(interval))
@@ -62,9 +62,9 @@ object QueuRDDStreamingTest extends Logging {
     val inputRDD: RDD[LabeledPoint] = if(fileType == "keel") {
       val typeConversion = KeelParser.parseHeaderFile(sc, header) 
       val bcTypeConv = sc.broadcast(typeConversion)
-      sc.textFile(input: String).repartition(npart).map(line => KeelParser.parseLabeledPoint(bcTypeConv.value, line))
+      sc.textFile(input: String).map(line => KeelParser.parseLabeledPoint(bcTypeConv.value, line))
     } else if(fileType == "labeled") {      
-      sc.textFile(input: String).repartition(npart).map(LabeledPoint.parse)
+      sc.textFile(input: String).map(LabeledPoint.parse)
     } else {
       sc.textFile(input: String).filter(line => !line.startsWith("#")).repartition(npart).map{ line =>         
           val arr = line split ","         
@@ -75,21 +75,20 @@ object QueuRDDStreamingTest extends Logging {
     } 
     
     // Transform simple RDD into a QueuRDD for streaming
-    inputRDD.cache()
-    val size = inputRDD.count()
-    logInfo("Distinct: " + inputRDD.map(_.features).distinct().count())
-    val nchunks = (size / rate).toInt
+    val partitionedRDD = inputRDD.repartition(npart).cache()
+    val nchunks = (partitionedRDD.count() / rate).toInt
     val chunkPerc = 1.0 / nchunks
+    logInfo("Distinct: " + partitionedRDD.map(_.features).distinct().count())
     logInfo("Number of batches: " + nchunks)
     logInfo("Batch size: " + chunkPerc)    
-    val arrayRDD = inputRDD.randomSplit(Array.fill[Double](nchunks)(chunkPerc), seed).map(_.cache())
+    
+    val arrayRDD = partitionedRDD.randomSplit(Array.fill[Double](nchunks)(chunkPerc), seed).map(_.cache())
     logInfo("Count by partition: " + arrayRDD.map(_.count()).mkString(",")) // Important to force the persistence
-    inputRDD.unpersist()
-    val trainingData = ssc.queueStream(scala.collection.mutable.Queue(arrayRDD: _*), 
+    partitionedRDD.unpersist()
+    
+    val training = arrayRDD.slice(1, arrayRDD.length)
+    val trainingData = ssc.queueStream(scala.collection.mutable.Queue(training: _*), 
         oneAtATime = true)
-        
-    val listen = new MyJobListener(ssc, nchunks)
-    ssc.addStreamingListener(listen)
         
     val model = new StreamingDistributedKNN()
       .setNTrees(ntrees)
@@ -98,6 +97,10 @@ object QueuRDDStreamingTest extends Logging {
       .setRemovedOld(removeOld) 
       .setSeed(seed)
       .setKGraph(kGraph)
+      .setInitialRDD(arrayRDD.head)
+        
+    val listen = new MyJobListener(ssc, nchunks)
+    ssc.addStreamingListener(listen)
     
     val preds = model.predictOnValues(trainingData, k)
         .map{case (label, pred) => if(label == pred) (1, 1)  else (0, 1)}

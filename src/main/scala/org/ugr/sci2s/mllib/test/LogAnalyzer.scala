@@ -64,39 +64,41 @@ object LogAnalyzer extends Logging {
       val instances = Array.fill[Int](nbatches)(0)
       val delays = Array.fill[Float](nbatches)(0)
       val batchTime = Array.fill[Float](nbatches)(0)
-      var index = 0
+      var trainingIndex = 0; var clsIndex = 0; var bIndex = 0;
       
       println("Num. batches: " + nbatches)
       for((line, _) <- lines) {
         val tokens = line.split(" ")
         if(line.contains("map at StreamingDistributedKNN.scala:137) finished")) {
-          classificTime(index) += tokens(tokens.length - 2).replace(',', '.').toFloat
+          classificTime(clsIndex) += tokens(tokens.length - 2).replace(',', '.').toFloat
         } else if(regReduce.findFirstIn(line).isDefined) {
-          classificTime(index) += tokens(tokens.length - 2).replace(',', '.').toFloat
+          classificTime(clsIndex) += tokens(tokens.length - 2).replace(',', '.').toFloat
         } else if(line.contains("map at StreamingDistributedKNN.scala:161) finished")) {
-          trainTime(index) += tokens(tokens.length - 2).replace(',', '.').toFloat
+          trainTime(trainingIndex) += tokens(tokens.length - 2).replace(',', '.').toFloat
         } else if(line.contains("sum at StreamingDistributedKNN.scala:344) finished")) {
-          trainTime(index) += tokens(tokens.length - 2).replace(',', '.').toFloat
+          trainTime(trainingIndex) += tokens(tokens.length - 2).replace(',', '.').toFloat
         } else if(line.contains("Number of instances in the modified case-base")) {
-          instances(index) = tokens(tokens.length - 1).toFloat.toInt 
+          instances(trainingIndex) = tokens(tokens.length - 1).toFloat.toInt           
+          trainingIndex += 1
         } else if (line.contains("Accuracy per batch")) {
-          accuracy(index) = tokens(tokens.length - 1).toFloat      
+          accuracy(clsIndex) = tokens(tokens.length - 1).toFloat  
+          clsIndex +=1
         } else if (line.contains("Batch scheduling delay")) {
-          delays(index) = tokens(tokens.length - 1).toFloat        
+          delays(bIndex) = tokens(tokens.length - 1).toFloat        
         } else if (line.contains("Batch processing time")) {
-          batchTime(index) = tokens(tokens.length - 1).toFloat
-          index += 1
+          batchTime(bIndex) = tokens(tokens.length - 1).toFloat
+          bIndex += 1
         }        
       }
       
-      val newsize = classificTime.filter(_ != 0).length + 2
-      val avg = accuracy.slice(2, newsize).sum / (newsize - 2)
-      val output = "Training time," + trainTime.slice(1, newsize).mkString(",") + "\n" + 
-        "Classification time," + classificTime.slice(1, newsize).mkString(",") + "\n" +
-        "Scheduling delay," + delays.slice(1, newsize).mkString(",") + "\n" +
-        "Batch time," + batchTime.slice(1, newsize).mkString(",") + "\n" +        
-        "Accuracy," + accuracy.slice(1, newsize).mkString(",") + "\n" + 
-        "Instances, " + instances.slice(1, newsize).mkString(",") + "\n" +
+      val newsize = trainTime.filter(_ != 0).length
+      val avg = accuracy.filter(_ != 0).sum / accuracy.filter(_ != 0).length
+      val output = "Training time," + trainTime.slice(0, newsize).mkString(",") + "\n" + 
+        "Classification time," + classificTime.slice(0, newsize).mkString(",") + "\n" +
+        "Scheduling delay," + delays.slice(0, newsize).mkString(",") + "\n" +
+        "Batch time," + batchTime.slice(0, newsize).mkString(",") + "\n" +        
+        "Accuracy," + accuracy.slice(0, newsize).mkString(",") + "\n" + 
+        "Instances, " + instances.slice(0, newsize).mkString(",") + "\n" +
         "Total acc," + avg + "\n" +        
         "Total batches," + newsize + "\n"
         

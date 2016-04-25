@@ -232,13 +232,21 @@ class StreamingDistributedKNN (
     var sampleSizes: Array[Int],
     var edited: Boolean,
     var removeOld: Boolean,
-    var seed: Long) extends Logging with Serializable {
+    var seed: Long,
+    var initialRDD: RDD[LabeledPoint]) extends Logging with Serializable {
 
-  def this() = this(10, 2, -1, (100 to 1000 by 100).toArray, true, false, 26827651492L)
+  def this() = this(10, 2, -1, (100 to 1000 by 100).toArray, true, false, 26827651492L, null)
   
   private val DEFAULT_NUMBER_SAMPLES = 10
   
-  protected var model: StreamingDistributedKNNModel = new StreamingDistributedKNNModel(null, null, 0.0)
+  protected var model: StreamingDistributedKNNModel = {
+    if(initialRDD == null) {
+      new StreamingDistributedKNNModel(null, null, 0.0)
+    } else {
+      initializeModel(initialRDD)
+    }      
+  } 
+    
 
   /**
    * Set the number of partitions/sub-trees to use in the model.
@@ -283,12 +291,10 @@ class StreamingDistributedKNN (
     this.seed = s
     this
   }
-
-  /**
-   * Return the latest model.
-   */
-  def updatedModel(): StreamingDistributedKNNModel = {
-    model
+  
+  def setInitialRDD(rdd: RDD[LabeledPoint]): this.type = {
+    this.initialRDD = rdd
+    this
   }
 
   /**
