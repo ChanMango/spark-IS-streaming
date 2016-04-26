@@ -147,6 +147,7 @@ public class MTreeWrapper extends MTree<DataLP> implements Serializable {
 	private static final long serialVersionUID = -4784817130749649598L;
 	private int leafCount;
 	private HashSet<DataLP> elements;
+	private final int TREE_MIN_LIMIT = 50;
 	
 	private static final PromotionFunction<DataLP> nonRandomPromotion = new PromotionFunction<DataLP>() {
 		@Override
@@ -193,7 +194,7 @@ public class MTreeWrapper extends MTree<DataLP> implements Serializable {
 	}
 	
 	public boolean remove(DataLP point) {
-		if(elements.remove(point)) {
+		if(elements.remove(point) && leafCount > TREE_MIN_LIMIT) {
 			if(super.remove(point)){
 				leafCount --;
 				return true;

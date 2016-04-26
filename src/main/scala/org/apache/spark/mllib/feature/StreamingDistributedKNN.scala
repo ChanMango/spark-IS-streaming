@@ -339,7 +339,7 @@ class StreamingDistributedKNN (
           val oldModel = model
           model = initializeModel(casebase)
           logInfo("Number of instances in the new case-base: " + model.trees.map(_.getSize).sum.toInt) // Important
-          oldModel.trees.unpersist()
+          //oldModel.trees.unpersist()
           nelem = 0
         }
         // Insert new examples
@@ -348,7 +348,7 @@ class StreamingDistributedKNN (
           val oldModel = model
           model = if(edited) editModel(rdd) else insertNewExamples(rdd)
           logInfo("Number of instances in the modified case-base: " + model.trees.map(_.getSize).sum.toInt) // Important
-          oldModel.trees.unpersist()
+          //oldModel.trees.unpersist()
         }
       }
     }
