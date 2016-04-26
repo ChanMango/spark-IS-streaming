@@ -76,11 +76,13 @@ object QueuRDDStreamingTest extends Logging {
     
     // Transform simple RDD into a QueuRDD for streaming
     val partitionedRDD = inputRDD.repartition(npart).cache()
-    val nchunks = (partitionedRDD.count() / rate).toInt
+    val size = partitionedRDD.count()
+    val nchunks = (size / rate).toInt
     val chunkPerc = 1.0 / nchunks
     logInfo("Distinct: " + partitionedRDD.map(_.features).distinct().count())
     logInfo("Number of batches: " + nchunks)
-    logInfo("Batch size: " + chunkPerc)    
+    logInfo("Batch percentage: " + chunkPerc)    
+    logInfo("Batch size: " + chunkPerc * size)
     
     val arrayRDD = partitionedRDD.randomSplit(Array.fill[Double](nchunks)(chunkPerc), seed).map(_.cache())
     logInfo("Count by partition: " + arrayRDD.map(_.count()).mkString(",")) // Important to force the persistence
