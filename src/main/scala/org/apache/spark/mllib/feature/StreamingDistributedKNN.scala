@@ -85,9 +85,9 @@ class StreamingDistributedKNNModel (
     val trees: RDD[MTreeWrapper],
     var tau: Double) extends Serializable with Logging {
   
-  private def topByKey(toOrder: RDD[(Long, (DataLP, Double, Int))], num: Int)
-    (implicit ord: Ordering[(DataLP, Double, Int)]) = {
-    toOrder.aggregateByKey(new BoundedPriorityQueue[(DataLP, Double, Int)](num)(ord))(
+  private def topByKey(toOrder: RDD[(Long, (DataLP, Double, Double))], num: Int)
+    (implicit ord: Ordering[(DataLP, Double, Double)]) = {
+    toOrder.aggregateByKey(new BoundedPriorityQueue[(DataLP, Double, Double)](num)(ord))(
       seqOp = (queue, item) => {
         queue += item
       },
@@ -97,7 +97,7 @@ class StreamingDistributedKNNModel (
     ).mapValues(_.toArray.sorted(ord.reverse))  // This is an min-heap, so we reverse the order.
   }
   
-  private def accuratekNNQuery(data: RDD[LabeledPoint], k: Int): RDD[(TreeLP, Array[TreeLP])] = {
+  private[feature] def accuratekNNQuery(data: RDD[LabeledPoint], k: Int): RDD[(TreeLP, Array[TreeLP])] = {
 
     // Efficient join if elements and their neighbors have the same partitioning scheme
     val indexedData = data.zipWithIndex.map(_.swap).partitionBy(new HashPartitioner(trees.partitions.length)).cache
@@ -109,27 +109,55 @@ class StreamingDistributedKNNModel (
     }.partitionBy(new HashPartitioner(trees.partitions.length))
 
     // for each partition, search points within corresponding child tree
-    val results = searchData.zipPartitions(trees) {
+    val results = searchData.zipPartitions(trees, preservesPartitioning = true) {
       (childData, trees) =>
         val tree = trees.next()
         assert(!trees.hasNext)
         childData.flatMap {
           case (ipart, (point, idx)) =>
             tree.kNNQuery(k, point.features.toArray.map(_.toFloat))
-              .map(pair => (idx, (pair.data.asInstanceOf[DataLP], pair.distance, ipart)))
+              .map(pair => (idx, (pair.data.asInstanceOf[DataLP], pair.distance, ipart.toDouble)))
         }
     }
     
     // merge results by point index together and keep topK results
     val neigs = topByKey(results, k)(Ordering.by(-_._2)).map { case (lidx, iter) => 
-      lidx -> iter.map{ case(neigh, _, idx) => new TreeLP(LPUtils.fromJavaLP(neigh.asInstanceOf[DataLP]), idx, null)}
+      lidx -> iter.map{ case(neigh, _, idx) => new TreeLP(LPUtils.fromJavaLP(neigh.asInstanceOf[DataLP]), idx.toInt, null)}
     }
     
-    indexedData.join(neigs).values.map{ case(lp, neigs) =>
+    neigs.join(indexedData).values.map{ case(neigs, lp) =>
       val tlp = new TreeLP(lp, searchIndex(lp.features, topTree.value), null)
       tlp -> neigs
     }
+  }
+  
+  private def accuratekNNPrediction(data: RDD[LabeledPoint], k: Int): RDD[(Double, Double)] = {
 
+    // Efficient join if elements and their neighbors have the same partitioning scheme
+    val searchData = data.zipWithIndex.map(_.swap).flatMap { case (idx, vector) =>
+        val indices = searchIndices(vector.features, topTree.value, tau)
+          .map(i => (i, (vector, idx)))
+        assert(indices.filter(_._1 == -1).length == 0, s"indices must be non-empty: $vector")
+        indices
+    }.partitionBy(new HashPartitioner(trees.partitions.length))
+
+    // for each partition, search points within corresponding child tree
+    val results = searchData.zipPartitions(trees, preservesPartitioning = true) {
+      (childData, trees) =>
+        val tree = trees.next()
+        assert(!trees.hasNext)
+        childData.flatMap {
+          case (ipart, (point, idx)) =>
+            tree.kNNQuery(k, point.features.toArray.map(_.toFloat))
+              .map(pair => (idx, (pair.data.asInstanceOf[DataLP], pair.distance, point.label)))
+        }
+    }
+    
+    // merge results by point index together and keep topK results
+    topByKey(results, k)(Ordering.by(-_._2)).map { case (lidx, neig) => 
+      val pred = neig.map(_._1.getLabel).groupBy(identity).maxBy(_._2.size)._1
+      neig(0)._3 -> pred
+    }
   }
   
   private def fastkNNQuery(data: RDD[LabeledPoint], k: Int): RDD[(TreeLP, Array[TreeLP])] = {
@@ -189,22 +217,19 @@ class StreamingDistributedKNNModel (
   
   def predict(data: RDD[LabeledPoint], k: Int): RDD[(Double, Double)] = {
     if(topTree != null && !data.isEmpty()) {
-      kNNQuery(data, k).map{ case (lp, arr) =>
-        val pred = arr.map(_.point.label).groupBy(identity).maxBy(_._2.size)._1
-        (lp.point.label, pred)
-      }   
+      if(tau > 0) {
+        accuratekNNPrediction(data, k)
+      } else {
+        fastkNNQuery(data, k).map{ case (lp, arr) =>
+          val pred = arr.map(_.point.label).groupBy(identity).maxBy(_._2.size)._1
+          (lp.point.label, pred)
+        }
+      }
+         
     } else {
       data.context.emptyRDD[(Double, Double)]
     }
   } 
-  
-  def kNNQuery(data: RDD[LabeledPoint], k: Int): RDD[(TreeLP, Array[TreeLP])] = {
-    if(topTree != null) {
-      if(tau > 0) accuratekNNQuery(data, k) else fastkNNQuery(data, k)
-    } else {
-      data.context.emptyRDD[(TreeLP, Array[TreeLP])]
-    }
-  }
   
 }
 
@@ -389,7 +414,7 @@ class StreamingDistributedKNN (
   private def editModel(rdd: RDD[LabeledPoint]): StreamingDistributedKNNModel = {
     
       val newTrees = if(model.tau > 0) {
-        val localGraph = model.kNNQuery(rdd, kGraph)
+        val localGraph = model.accuratekNNQuery(rdd, kGraph)
         val edited = InstanceSelection.instanceSelection(localGraph, removeOld)        
         editTrees(edited, model.trees).persist(StorageLevel.MEMORY_AND_DISK)
       } else {
