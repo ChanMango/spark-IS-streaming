@@ -1,28 +1,12 @@
 package org.ugr.sci2s.mllib.test
 
-
-import org.apache.spark._
-import org.apache.spark.streaming._
-import org.apache.spark.mllib.regression.LabeledPoint
-import org.apache.spark.mllib.feature.StreamingDistributedKNN
-import org.apache.spark.mllib.feature.StreamingDistributedKNN._
-import org.apache.spark.rdd.RDD
-import org.apache.spark.streaming.scheduler.StreamingListener
-import org.apache.spark.streaming.scheduler.StreamingListenerBatchCompleted
-import org.apache.spark.streaming.scheduler.StreamingListenerBatchStarted
-import org.apache.spark.streaming.scheduler.StreamingListenerBatchCompleted
-import mtree.DataLP
-import mtree.IndexedLP
-import org.apache.spark.mllib.knn.VectorWithNorm
-import mtree.MTree
-import org.apache.spark.mllib.linalg.Vectors
 import scala.io.Source
 import java.io.PrintWriter
 import java.io.File
 import java.io.BufferedWriter
 import java.io.FileWriter
 
-object LogAnalyzer extends Logging {
+object LogAnalyzer {
 
   def main(args: Array[String]): Unit = {   
     
@@ -47,10 +31,10 @@ object LogAnalyzer extends Logging {
       val linesToSelect = (line: String) => {
         regReduce.findFirstIn(line).isDefined || // reduce phase (classify)
         line.contains("Accuracy per batch") || 
-        line.contains("map at StreamingDistributedKNN.scala:137) finished") || // fast knn query (classify) 
-        line.contains("map at StreamingDistributedKNN.scala:432) finished") || // insert new examples (training)       
-        line.contains("map at StreamingDistributedKNN.scala:161) finished") || // fast edition (training)
-        line.contains("sum at StreamingDistributedKNN.scala:350) finished") || // final action (training)
+        line.contains("map at StreamingDistributedKNN.scala:165) finished") || // fast knn query (classify) 
+        line.contains("map at StreamingDistributedKNN.scala:427) finished") || // insert new examples (training)       
+        line.contains("map at StreamingDistributedKNN.scala:189) finished") || // fast edition (training)
+        line.contains("sum at StreamingDistributedKNN.scala:375) finished") || // final action (training)
         line.contains("Number of instances in the modified case-base") ||
         line.contains("Accuracy per batch") ||        
         line.contains("Batch scheduling delay") ||
@@ -70,13 +54,13 @@ object LogAnalyzer extends Logging {
       println("Num. batches: " + nbatches)
       for((line, _) <- lines) {
         val tokens = line.split(" ")
-        if(line.contains("map at StreamingDistributedKNN.scala:137) finished")) {
+        if(line.contains("map at StreamingDistributedKNN.scala:189) finished")) {
           classificTime(clsIndex) += tokens(tokens.length - 2).replace(',', '.').toFloat
         } else if(regReduce.findFirstIn(line).isDefined) {
           classificTime(clsIndex) += tokens(tokens.length - 2).replace(',', '.').toFloat
-        } else if(line.contains("map at StreamingDistributedKNN.scala:161) finished") || line.contains("map at StreamingDistributedKNN.scala:432) finished")) {
+        } else if(line.contains("map at StreamingDistributedKNN.scala:165) finished") || line.contains("map at StreamingDistributedKNN.scala:427) finished")) {
           trainTime(trainingIndex) += tokens(tokens.length - 2).replace(',', '.').toFloat
-        } else if(line.contains("sum at StreamingDistributedKNN.scala:350) finished")) {
+        } else if(line.contains("sum at StreamingDistributedKNN.scala:375) finished")) {
           trainTime(trainingIndex) += tokens(tokens.length - 2).replace(',', '.').toFloat
         } else if(line.contains("Number of instances in the modified case-base")) {
           instances(trainingIndex) = tokens(tokens.length - 1).toFloat.toInt           
