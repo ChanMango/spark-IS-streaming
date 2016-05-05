@@ -121,7 +121,7 @@ class StreamingDistributedKNNModel (
     }
     
     // merge results by point index together and keep topK results
-    val neigs = topByKey(results, k)(Ordering.by(-_._2)).map { case (lidx, iter) => 
+    val neigs = topByKey(results, k)(Ordering.by(_._2)).map { case (lidx, iter) => 
       lidx -> iter.map{ case(neigh, _, idx) => new TreeLP(LPUtils.fromJavaLP(neigh.asInstanceOf[DataLP]), idx.toInt, null)}
     }
     
@@ -154,7 +154,7 @@ class StreamingDistributedKNNModel (
     }
     
     // merge results by point index together and keep topK results
-    topByKey(results, k)(Ordering.by(-_._2)).map { case (lidx, neig) => 
+    topByKey(results, k)(Ordering.by(_._2)).map { case (lidx, neig) => 
       val pred = neig.map(_._1.getLabel).groupBy(identity).maxBy(_._2.size)._1
       neig(0)._3 -> pred
     }
