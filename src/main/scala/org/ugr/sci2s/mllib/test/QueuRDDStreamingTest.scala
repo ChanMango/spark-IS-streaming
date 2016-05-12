@@ -48,11 +48,13 @@ object QueuRDDStreamingTest extends Logging {
     val removeOld = params.getOrElse("removeOld", "false").toBoolean
     val timeout = params.getOrElse("timeout", "600000").toLong
     val kGraph = params.getOrElse("kgraph", "10").toInt
+    val sampling = params.getOrElse("sampling", "0.0").toDouble
+    val nclass = params.getOrElse("nclass", "2").toInt
         
     // Create a local StreamingContext with two working thread and batch interval of 1 second.
     // The master requires 2 cores to prevent from a starvation scenario.
     val conf = new SparkConf().setAppName("MLStreamingTest")
-      .setMaster("local[4]")
+      //.setMaster("local[4]")
     conf.registerKryoClasses(Array(classOf[DataLP], classOf[IndexedLP], 
         classOf[TreeLP], classOf[VectorWithNorm]))
     val ssc = new StreamingContext(conf, Milliseconds(interval))
@@ -75,7 +77,13 @@ object QueuRDDStreamingTest extends Logging {
     } 
     
     // Transform simple RDD into a QueuRDD for streaming
-    val partitionedRDD = inputRDD.repartition(npart).cache()
+    val sampled = if(sampling > 0){
+      val fractions = (0 until nclass).map{c => c.toDouble -> sampling}.toMap
+      inputRDD.map{lp => lp.label -> lp}.sampleByKeyExact(withReplacement = false, fractions, seed).values
+    }  else {
+      inputRDD 
+    }
+    val partitionedRDD = sampled.repartition(npart).cache()
     val size = partitionedRDD.count()
     val nchunks = (size / rate).toInt
     val chunkPerc = 1.0 / nchunks
@@ -94,7 +102,7 @@ object QueuRDDStreamingTest extends Logging {
         
     val model = new StreamingDistributedKNN()
       .setNTrees(ntrees)
-      .setOverlapDistance(overlap)
+      .setOverlapDistance(-1.0)
       .setEdited(edited)
       .setRemovedOld(removeOld) 
       .setSeed(seed)
