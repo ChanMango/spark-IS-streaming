@@ -102,7 +102,7 @@ object QueuRDDStreamingTest extends Logging {
         
     val model = new StreamingDistributedKNN()
       .setNTrees(ntrees)
-      .setOverlapDistance(-1.0)
+      .setOverlapDistance(overlap)
       .setEdited(edited)
       .setRemovedOld(removeOld) 
       .setSeed(seed)
