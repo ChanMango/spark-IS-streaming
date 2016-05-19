@@ -83,7 +83,8 @@ object QueuRDDStreamingTest extends Logging {
     }  else {
       inputRDD 
     }
-    val partitionedRDD = sampled.repartition(npart).cache()
+    
+    val partitionedRDD = sampled.cache()//.repartition(npart).cache()
     val size = partitionedRDD.count()
     val nchunks = (size / rate).toInt
     val chunkPerc = 1.0 / nchunks

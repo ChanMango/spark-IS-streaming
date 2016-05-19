@@ -353,7 +353,7 @@ class StreamingDistributedKNN (
           queue ++= rdd.collect()
         }
       } else {
-        if(isUnbalanced()){ // No re-balance for static experiments 
+        if(false){ // No re-balance for static experiments 
           logInfo("Re-balancing the distributed m-tree." + 
               "One or more sub-trees have grown too much.")
           // Re-balance the whole case-base. New topTree and a new re-partition process is started for sub-trees
