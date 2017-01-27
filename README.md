@@ -39,6 +39,9 @@ spark-submit --class org.ugr.sci2s.mllib.test.QueuRDDStreamingTest spark-IS-stre
 --input=hdfs://localhost:8020/train.data --output=hdfs://localhost:8020/output/streaming-test 
 --type=csv --interval=1000 --rate=100000 --ntrees=460 --npart=460 --edited=true
 
+For a more thorough sourc code example, please refer to: 
+src/main/scala/org/ugr/sci2s/mllib/test/QueuRDDStreamingTest.scala
+  
 ## Contributors
 
 - Sergio Ramírez-Gallego (sramirez@decsai.ugr.es) (main contributor and maintainer).
