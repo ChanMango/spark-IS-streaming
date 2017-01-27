@@ -11,6 +11,8 @@ A improved local version of RNGE [1] in order to control the insertion and remov
 For each incoming example, a relative graph is built around each new instance and its subset of neighbors. 
 The local graphs are then used to edit the case-base by deciding what instances should be inserted, removed or left intact.
 
+Associated Spark package: https://spark-packages.org/package/sramirez/spark-IS-streaming
+
 ## Parameters:
 
 Our distributed approach includes several user-defined input parameters, which are described below:
