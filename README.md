@@ -13,6 +13,11 @@ The local graphs are then used to edit the case-base by deciding what instances 
 
 Associated Spark package: https://spark-packages.org/package/sramirez/spark-IS-streaming
 
+Associated journal paper: S. Ramírez-Gallego, B. Krawczyk, S. García, M. Woźniak, J. M. Benítez and F. Herrera, "Nearest Neighbor Classification for High-Speed Big Data Streams Using Spark," in IEEE Transactions on Systems, Man, and Cybernetics: Systems, vol. 47, no. 10, pp. 2727-2739, Oct. 2017.
+doi: 10.1109/TSMC.2017.2700889
+URL: http://ieeexplore.ieee.org/stamp/stamp.jsp?tp=&arnumber=7993020&isnumber=8038140
+
+
 ## Parameters:
 
 Our distributed approach includes several user-defined input parameters, which are described below:
